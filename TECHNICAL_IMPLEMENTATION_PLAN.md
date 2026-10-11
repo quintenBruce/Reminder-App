@@ -11,7 +11,7 @@ Status: planned, not implemented. This document refines [PLAN.md](PLAN.md). Pric
 | API and background jobs | Cloud Functions for Firebase, 2nd generation, Node runtime | TypeScript |
 | Data and access | Cloud Firestore, Firebase Authentication, Firestore rules | Firestore rules language, JSON configuration |
 | Hosting and push | Firebase Hosting, Firebase Cloud Messaging (FCM) | JSON configuration, TypeScript service worker |
-| AI | OpenAI file transcription and Responses API structured output | Called from TypeScript functions |
+| AI | OpenAI `gpt-transcribe` and GPT-6.1 Sol with Responses API structured output | Called from TypeScript functions |
 
 There is no Kotlin, Java, Gradle, or native Android application in the initial version. Do not run the application or build tools in this workspace, per the repository instruction.
 
@@ -37,7 +37,7 @@ The scheduled function is not one job per reminder. A single job handles all due
 - Follow Android's light/dark preference via `prefers-color-scheme`; provide an in-app System/Light/Dark setting. Set matching PWA `theme-color` for the browser frame. Material Web color tokens can guide component colors.
 - A PWA can follow the system's **light/dark mode**. Standard web theming does not provide a dependable way to read the phone's Material You wallpaper palette, so the app will use its own coordinated Material 3 palette. A user-selectable accent can be added later.
 - Main screens: Home/conversation, Upcoming, Reminder detail/edit, History, Settings. The Home screen puts voice capture at thumb reach, shows the transcript and confirmation card, and gives clear success/error feedback. Text input remains available.
-- Voice is recorded after the user taps the mic and sent when they stop recording. Use the recommended OpenAI file transcription path for bounded clips, then a text model for interpretation. Browser speech synthesis reads the reply aloud; the full reply is always visible. This is push-to-talk, not an always-open live voice session.
+- Voice is recorded after the user taps the mic and sent when they stop recording. Use the recommended OpenAI file transcription path for bounded clips, then GPT-6.1 Sol at low reasoning effort for interpretation. Its cost is modest at this personal volume and it is better suited to complex edits than a model optimized for high-volume scoped tasks. Browser speech synthesis reads the reply aloud; the full reply is always visible. This is push-to-talk, not an always-open live voice session.
 - Full reminder text may appear on the lock screen, per user preference. Add a later privacy toggle for generic alerts. Install from Firefox for Android's menu; no Chrome dependency.
 
 ## Proposed repository layout
@@ -96,16 +96,16 @@ All mutation functions require the allowlisted UID. Add App Check and per-accoun
 
 ## Monthly cost estimate in USD
 
-Assumptions: 30 days; 20 seconds of audio and 2,000 text input / 250 output tokens per voice turn; `gpt-transcribe` at $0.0045/minute; GPT-6 Luna at $0.10/1M input and $0.50/1M output tokens. Browser speech synthesis has no OpenAI TTS charge. These are usage estimates, not a quote; longer prompts, billable reasoning output, retries, and model changes increase cost.
+Assumptions: 30 days; 20 seconds of audio and 2,000 text input / 500 total billable output tokens per voice turn; `gpt-transcribe` at $0.0045/minute; GPT-6.1 Sol at $2/1M input and $10/1M output tokens, using standard processing. Browser speech synthesis has no OpenAI TTS charge. These are usage estimates, not a quote; longer prompts, reasoning output above this allowance, retries, and model changes increase cost.
 
-| Voice turns | Audio minutes | Transcription | Luna interpretation | OpenAI subtotal |
+| Voice turns | Audio minutes | Transcription | Sol interpretation | OpenAI subtotal |
 | --- | ---: | ---: | ---: | ---: |
-| Average: 2/day (60/month) | 20 | $0.09 | $0.02 | **about $0.11/month** |
-| Busy: 10/day (300/month) | 100 | $0.45 | $0.10 | **about $0.55/month** |
+| Average: 2/day (60/month) | 20 | $0.09 | $0.54 | **about $0.63/month** |
+| Busy: 10/day (300/month) | 100 | $0.45 | $2.70 | **about $3.15/month** |
 
-If every interpretation instead uses GPT-6.1 Sol at $2/1M input and $10/1M output, the same assumptions give about **$0.48/month** at 2/day or **$2.40/month** at 10/day. We can start with Luna, measure errors on real reminder phrases, and route unclear cases to Sol. Confirmation and deterministic validation remain mandatory with either model.
+GPT-6 Luna would lower those estimates to about **$0.12/month** at 2/day or **$0.59/month** at 10/day under the same assumptions. Keep Sol as the initial model for complex conversational edits; consider Luna only after representative reminder phrases show equal reliability. Confirmation and deterministic validation remain mandatory with either model.
 
-For Firebase: one minute scheduler produces about 43,200 function invocations in a 30-day month, below the published 2 million/month no-cost invocation allowance. FCM is no-cost. A single Cloud Scheduler job is within the current allowance of three no-charge jobs per Google account; otherwise it is $0.10/month. Firestore, Hosting, function compute, Secret Manager, and build artifacts should be within their no-cost allowances at this personal scale **if the account's allowances are available**, but can incur charges. Blaze billing is required for Functions. Allow a practical initial budget of **$5/month total**, with alerts; review actual usage after the first month.
+For Firebase: one minute scheduler produces about 43,200 function invocations in a 30-day month, below the published 2 million/month no-cost invocation allowance. FCM is no-cost. A single Cloud Scheduler job is within the current allowance of three no-charge jobs per Google account; otherwise it is $0.10/month. Firestore, Hosting, function compute, Secret Manager, and build artifacts should be within their no-cost allowances at this personal scale **if the account's allowances are available**, but can incur charges. Blaze billing is required for Functions. Allow a practical initial budget of **$10/month total**, with alerts at $2 and $5; review actual usage after the first month.
 
 ## Implementation order and review gates
 
@@ -132,6 +132,8 @@ Before final push behavior is accepted, record the Samsung model, Android versio
 - [Firefox notification action support](https://bugzilla.mozilla.org/show_bug.cgi?id=1959931)
 - [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
 - [GPT-6 Luna model pricing](https://developers.openai.com/api/docs/models/gpt-6-luna)
+- [GPT-6.1 Sol model pricing](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+- [OpenAI model selection](https://developers.openai.com/api/docs/guides/model-selection)
 - [OpenAI transcription workflow](https://developers.openai.com/api/docs/guides/transcription)
 - [Material Web color tokens](https://material-web.dev/theming/color/)
 - [System light/dark CSS](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/%40media/prefers-color-scheme)

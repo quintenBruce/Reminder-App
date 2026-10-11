@@ -34,7 +34,7 @@ steps:
         pnpm run build:functions
         node scripts/prepare-deploy.mjs
         pnpm run build:web
-  - name: us-docker.pkg.dev/firebase-cli/us/firebase
+  - name: us-docker.pkg.dev/firebase-cli/us/firebase:15.33.0
     id: deploy
     args:
       - deploy

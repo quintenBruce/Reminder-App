@@ -1,6 +1,6 @@
 # Remind
 
-Personal, Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [TECHNICAL_IMPLEMENTATION_PLAN.md](TECHNICAL_IMPLEMENTATION_PLAN.md).
+Personal, Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [TECHNICAL_IMPLEMENTATION_PLAN.md](TECHNICAL_IMPLEMENTATION_PLAN.md). For exact Firebase, Google Cloud, and GitHub setup, use [the deployment guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md).
 
 ## Implemented source
 
@@ -10,15 +10,11 @@ Personal, Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [T
 - Shared recurrence rules for one-time, elapsed intervals, and daily/weekly/monthly/yearly wall-clock schedules, including DST resolution and next-five previews.
 - One scheduled dispatcher per minute and a data-only FCM push worker with Done and Snooze notification actions where Firefox supports them.
 
-## Setup before deployment
+## Verification and deployment
 
-1. Create a **new** Firebase project on Blaze. Enable Google Authentication, Firestore, Hosting, App Check for the web app, Cloud Messaging, and 2nd generation Cloud Functions. Choose the Firestore region before creating the database.
-2. Copy `.firebaserc.example` to `.firebaserc` and set the dedicated project ID. Copy `web/.env.example` to `web/.env` and fill the public Firebase web config, VAPID key, reCAPTCHA v3 site key, and owner UID. Do not put secrets in the web config.
-3. Sign in once in Firebase Authentication to obtain the exact Firebase UID for your Google account. Put it in `functions/.env` as `OWNER_UID` and replace `REPLACE_WITH_OWNER_UID` in `firestore.rules` with the same UID. The placeholder rule deliberately denies all reads.
-4. Set the Cloud Functions Secret Manager secret `OPENAI_API_KEY`. Keep the key out of Git and the browser. Add budget alerts for OpenAI and Google Cloud.
-5. Install dependencies to generate and commit a lockfile. Build `functions` and `web` before deploying. `firebase.json` does not run a build automatically. Deploy Firestore rules, functions, and Hosting together only after the build succeeds.
+The user authorized a build for this project. The committed pnpm lockfile supports `pnpm install --frozen-lockfile`; `functions/package-lock.json` pins the dependencies installed by the Cloud Functions buildpack. Run `pnpm test`, `pnpm run typecheck:web`, `pnpm run build:functions`, and `pnpm run build:web` to verify it. The local checks and production dependency audit passed on 2026-10-11. The production web build has a bundle-size warning, but completes successfully.
 
-The repository instruction forbids running applications and build tools here. Dependencies were not installed, no lockfile was generated, and no build or device test has been run. The setup and deployment steps above are for a later authorized environment.
+[`cloudbuild.yaml`](cloudbuild.yaml) runs those checks and deploys on a GitHub push after the Cloud Build trigger is configured. [`scripts/prepare-deploy.mjs`](scripts/prepare-deploy.mjs) generates ignored deployment files with the owner UID. See [the setup guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md) before connecting the repository. No Firebase project or device test has been completed yet.
 
 ## Device acceptance
 

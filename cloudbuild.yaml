@@ -1,0 +1,46 @@
+# Configure a GitHub push trigger on the repository's default branch.
+# Set the custom substitutions in that trigger; see docs/FIREBASE_GOOGLE_CLOUD_SETUP.md.
+substitutions:
+  _OWNER_UID: ''
+  _FIREBASE_API_KEY: ''
+  _FIREBASE_AUTH_DOMAIN: ''
+  _FIREBASE_APP_ID: ''
+  _FIREBASE_MESSAGING_SENDER_ID: ''
+  _FIREBASE_VAPID_KEY: ''
+  _RECAPTCHA_SITE_KEY: ''
+steps:
+  - name: node:22
+    id: verify-and-build
+    entrypoint: bash
+    env:
+      - OWNER_UID=${_OWNER_UID}
+      - VITE_OWNER_UID=${_OWNER_UID}
+      - VITE_FIREBASE_API_KEY=${_FIREBASE_API_KEY}
+      - VITE_FIREBASE_AUTH_DOMAIN=${_FIREBASE_AUTH_DOMAIN}
+      - VITE_FIREBASE_PROJECT_ID=$PROJECT_ID
+      - VITE_FIREBASE_APP_ID=${_FIREBASE_APP_ID}
+      - VITE_FIREBASE_MESSAGING_SENDER_ID=${_FIREBASE_MESSAGING_SENDER_ID}
+      - VITE_FIREBASE_VAPID_KEY=${_FIREBASE_VAPID_KEY}
+      - VITE_RECAPTCHA_SITE_KEY=${_RECAPTCHA_SITE_KEY}
+      - GOOGLE_CLOUD_PROJECT=$PROJECT_ID
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        corepack enable
+        pnpm install --frozen-lockfile
+        pnpm test
+        pnpm run typecheck:web
+        pnpm run build:functions
+        node scripts/prepare-deploy.mjs
+        pnpm run build:web
+  - name: us-docker.pkg.dev/firebase-cli/us/firebase
+    id: deploy
+    args:
+      - deploy
+      - --project=$PROJECT_ID
+      - --config=.firebase-deploy.json
+      - --only=hosting,firestore,functions
+      - --non-interactive
+options:
+  logging: CLOUD_LOGGING_ONLY

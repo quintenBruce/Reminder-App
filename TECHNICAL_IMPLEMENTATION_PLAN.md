@@ -1,6 +1,6 @@
 # Technical implementation plan
 
-Status: local source implementation in progress; not built, deployed, or device-tested. This document refines [PLAN.md](PLAN.md). Prices and platform behavior were checked on 2026-10-11 and must be rechecked before deployment.
+Status: local source implemented; tests, typecheck, and both production builds passed on 2026-10-11. Firebase deployment and device validation remain pending. This document refines [PLAN.md](PLAN.md). Prices and platform behavior were checked on 2026-10-11 and must be rechecked before deployment. Follow [the exact setup guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md) for the Cloud Build deployment path.
 
 ## Selected stack and languages
 
@@ -13,7 +13,7 @@ Status: local source implementation in progress; not built, deployed, or device-
 | Hosting and push | Firebase Hosting, Firebase Cloud Messaging (FCM) | JSON configuration, TypeScript service worker |
 | AI | OpenAI `gpt-transcribe` and GPT-6.1 Sol with Responses API structured output | Called from TypeScript functions |
 
-There is no Kotlin, Java, Gradle, or native Android application in the initial version. Do not run the application or build tools in this workspace, per the repository instruction.
+There is no Kotlin, Java, Gradle, or native Android application in the initial version. The user explicitly authorized this project's builds and tests; the PWA itself has not been run or device-tested.
 
 ## How Cloud Functions fit
 
@@ -115,7 +115,7 @@ For Firebase: one minute scheduler produces about 43,200 function invocations in
 3. Implement shared schedule types, recurrence calculator, DST and interval fixtures, Firestore rules, and transaction-based mutations.
 4. Add transcription, structured proposals, conversational target resolution, spoken readback, confirmation, and clarification turns.
 5. Add FCM enrollment, due dispatcher, retry ledger, notification actions, and overdue handling.
-6. Review source and configuration without running the application here. Provide device test steps for the user: install in Firefox for Android, grant permissions, test 5-minute reminder, background/closed browser, restart, offline recovery, recurrence, DST, Dismiss/Done/Snooze, history deletion, and account denial.
+6. Verify with automated tests, typecheck, and production builds, then follow the device test steps in the setup guide: install in Firefox for Android, grant permissions, test a five-minute reminder, background/closed browser, restart, offline recovery, recurrence, DST, Dismiss/Done/Snooze, history deletion, and account denial.
 
 ## Remaining device detail
 

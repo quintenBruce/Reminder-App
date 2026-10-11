@@ -7,6 +7,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { defineSecret } from 'firebase-functions/params';
 import OpenAI, { toFile } from 'openai';
 import { nextOccurrence, previewOccurrences, validateNudge, validateRule, type ReminderRecord, type ScheduleRule } from '../../shared/src/schedule';
+import { afterDelivery, applyReminderAction } from '../../shared/src/reminderState';
 
 initializeApp();
 const db = getFirestore();
@@ -221,28 +222,9 @@ async function applyAction(uid: string, reminderId: string, action: 'done' | 'di
     const r = record(snap.data()!, snap.id);
     if (r.status !== 'active') throw new HttpsError('failed-precondition', 'Reminder is canceled.');
     if (expectedVersion != null && r.version !== expectedVersion) throw new HttpsError('failed-precondition', 'Reminder changed. Please ask again.');
-    const occurrenceAt = occurrenceId?.startsWith(`${reminderId}_`) ? Number(occurrenceId.slice(reminderId.length + 1)) : null;
-    if (occurrenceId && (!Number.isFinite(occurrenceAt) || (occurrenceAt !== r.lastScheduledAt && occurrenceAt !== r.currentScheduledAt))) {
-      throw new HttpsError('failed-precondition', 'That alert is no longer current.');
-    }
-    const update: Partial<ReminderRecord> = { updatedAt: now, version: r.version + 1 };
-    if (action === 'done') {
-      const doneForDeliveredAlert = occurrenceAt !== null && occurrenceAt === r.lastScheduledAt && r.currentScheduledAt === null;
-      if (!doneForDeliveredAlert) {
-        const target = r.currentScheduledAt ?? r.nextDueAt ?? r.lastScheduledAt;
-        if (target !== undefined && target !== null) update.nextDueAt = nextOccurrence(r.rule, target);
-      }
-      update.currentScheduledAt = null;
-      if (('nextDueAt' in update ? update.nextDueAt : r.nextDueAt) === null) update.status = 'completed';
-    } else if (action === 'dismiss') {
-      update.dismissedAt = now;
-    } else {
-      if (!Number.isInteger(snoozeMinutes) || (snoozeMinutes ?? 0) < 5 || (snoozeMinutes ?? 0) > 525_600) {
-        throw new HttpsError('invalid-argument', 'Invalid snooze interval.');
-      }
-      update.nextDueAt = now + snoozeMinutes! * 60_000;
-      update.currentScheduledAt = occurrenceAt ?? r.currentScheduledAt ?? ((r.lastSentAt ?? 0) > now - 60 * 60_000 ? r.lastScheduledAt ?? r.nextDueAt : r.nextDueAt);
-    }
+    let update: Partial<ReminderRecord>;
+    try { update = applyReminderAction(r, action, now, snoozeMinutes, occurrenceId); }
+    catch (error) { throw new HttpsError('failed-precondition', error instanceof Error ? error.message : 'Invalid occurrence action.'); }
     tx.update(ref, action === 'done' ? { ...update, dismissedAt: FieldValue.delete() } : update);
     const result = { reminderId, action, at: now };
     tx.create(idempotency, { result, createdAt: now });
@@ -366,19 +348,11 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
       const snap = await tx.get(doc.ref);
       if (!snap.exists || snap.get('leaseUntil') !== now + 90_000 || snap.get('version') !== claimed.version) return;
       const r = record(snap.data()!, snap.id);
-      const failures = delivered ? 0 : (r.failedAttempts ?? 0) + 1;
-      const retryMinutes = Math.min(30, 2 ** Math.min(failures - 1, 5));
-      const nextDueAt = delivered
-        ? (r.repeatUntilDoneMinutes ? finishAt + r.repeatUntilDoneMinutes * 60_000 : nextOccurrence(r.rule, Math.max(scheduledAt, finishAt)))
-        : finishAt + retryMinutes * 60_000;
-      tx.update(doc.ref, { nextDueAt, currentScheduledAt: delivered && !r.repeatUntilDoneMinutes ? null : scheduledAt,
-        lastSentAt: delivered ? finishAt : r.lastSentAt ?? null,
-        lastScheduledAt: delivered ? scheduledAt : r.lastScheduledAt ?? null,
-        failedAttempts: failures, leaseUntil: 0,
-        updatedAt: finishAt, version: r.version + 1 });
+      const transition = afterDelivery(r, scheduledAt, finishAt, delivered);
+      tx.update(doc.ref, transition.update);
       tx.set(root(ownerUid).collection('occurrences').doc(`${r.id}_${scheduledAt}`), {
         reminderId: r.id, scheduledAt, lastAttemptAt: finishAt,
-        status: delivered ? 'sent' : finishAt - scheduledAt > 6 * 60 * 60_000 ? 'missed' : 'retry', attempts: FieldValue.increment(1),
+        status: transition.occurrenceStatus, attempts: FieldValue.increment(1),
       }, { merge: true });
     });
   }

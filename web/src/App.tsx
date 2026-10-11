@@ -4,7 +4,7 @@ import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestor
 import { Bell, Check, ChevronRight, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
 import type { ReminderRecord } from '../../shared/src/schedule';
 import { auth, callable, database, enablePush, needsPushRegistration, signIn, signOutUser } from './firebase';
-import { startVoiceRecording, type VoiceRecording } from './voice';
+import { microphoneErrorMessage, startVoiceRecording, withTimeout, type VoiceRecording } from './voice';
 
 type View = 'home' | 'upcoming' | 'history' | 'settings';
 type Theme = 'system' | 'light' | 'dark';
@@ -66,6 +66,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [startingRecording, setStartingRecording] = useState(false);
+  const [workingLabel, setWorkingLabel] = useState('Working on it…');
+  const [recordingMode, setRecordingMode] = useState<VoiceRecording['mode']>('wav');
   const [notice, setNotice] = useState('');
   const [voiceReply, setVoiceReply] = useState(true);
   const recorderRef = useRef<VoiceRecording | null>(null);
@@ -130,7 +132,7 @@ export default function App() {
   async function sendText(text: string) {
     const value = text.trim();
     if (!value || busy) return;
-    setBusy(true); setNotice(''); setDraft(''); setView('home');
+    setBusy(true); setWorkingLabel('Understanding your request…'); setNotice(''); setDraft(''); setView('home');
     try {
       if (proposal && /^(yes|confirm|do it|okay|ok)$/i.test(value)) {
         await confirm();
@@ -153,6 +155,7 @@ export default function App() {
       ? enablePush(setNotice).then(() => '').catch(error => error instanceof Error ? error.message : 'Could not enable notifications.')
       : Promise.resolve('');
     setBusy(true);
+    setWorkingLabel('Saving reminder…');
     try {
       await call.confirm({ proposalId: proposal.id });
       setNotice(pushNeeded ? 'Saved. Allow Firefox notifications to get alerts.'
@@ -173,12 +176,15 @@ export default function App() {
     recorderRef.current = null;
     if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
     recordingTimeoutRef.current = null;
-    setRecording(false); setBusy(true);
+    setRecording(false); setBusy(true); setWorkingLabel('Finishing recording…');
     try {
-      const audio = await capture.stop();
+      const audio = await withTimeout(capture.stop(), 4000, 'The recording did not stop. Please try again.');
       if (audio.size > 5_000_000) throw new Error('Recording exceeds 5 MB. Please try a shorter message.');
+      setWorkingLabel('Transcribing your speech…');
       const audioBase64 = await blobToBase64(audio);
-      const { transcript } = await call.transcribe({ audioBase64, mimeType: audio.type });
+      const { transcript } = await withTimeout(call.transcribe({ audioBase64, mimeType: audio.type }), 45_000,
+        'Transcription timed out. Check your connection and try again.');
+      if (!transcript.trim()) throw new Error('No speech was detected. Please try again and speak for a few seconds.');
       setBusy(false);
       await sendText(transcript);
     } catch (error) { setBusy(false); setNotice(error instanceof Error ? error.message : 'Transcription failed.'); }
@@ -202,12 +208,13 @@ export default function App() {
       const capture = await startVoiceRecording();
       if (startId !== recordingStartRef.current) { await capture.cancel(); return; }
       recorderRef.current = capture;
+      setRecordingMode(capture.mode);
       setRecording(true); setStartingRecording(false);
       recordingTimeoutRef.current = window.setTimeout(() => { void finishRecording(capture); }, 60_000);
     } catch (error) {
       if (startId === recordingStartRef.current) {
         setStartingRecording(false);
-        setNotice(error instanceof Error ? error.message : 'Microphone unavailable.');
+        setNotice(microphoneErrorMessage(error));
       }
     }
   }
@@ -258,8 +265,8 @@ export default function App() {
             {!!proposal.preview.length && <div className="preview-times">{proposal.preview.map(time => <span key={time}>{dateLabel(time)}</span>)}</div>}
             <div className="proposal-actions"><button className="primary" disabled={busy} onClick={confirm}>Confirm</button><button className="secondary" onClick={() => setProposal(null)}>Cancel</button></div>
           </div>}
-          {busy && <div className="thinking"><span className="spinner" /> Working on it…</div>}
-          {startingRecording && <div className="thinking"><span className="spinner" /> Starting microphone… check Firefox’s permission prompt</div>}
+          {busy && <div className="thinking"><span className="spinner" /> {workingLabel}</div>}
+          {startingRecording && <div className="thinking"><span className="spinner" /> Starting microphone…</div>}
           <div ref={endRef} />
         </div>
         <form className="composer" onSubmit={event => { event.preventDefault(); void sendText(draft); }}>
@@ -267,7 +274,7 @@ export default function App() {
           <button type="submit" className="send-button" aria-label="Send" disabled={!draft.trim() || busy || startingRecording}><Send size={19} /></button>
           <button type="button" className={`mic-button ${recording ? 'is-recording' : ''} ${startingRecording ? 'is-starting' : ''}`} aria-label={recording ? 'Stop recording' : startingRecording ? 'Cancel microphone startup' : 'Start recording'} onClick={toggleRecording} disabled={busy}><Mic size={23} /></button>
         </form>
-        <div className="composer-hint">{recording ? 'Listening… tap the microphone to stop' : startingRecording ? 'Tap the microphone again to cancel' : 'Tap the microphone to speak · Changes need your confirmation'}</div>
+        <div className="composer-hint">{recording ? `Listening${recordingMode === 'browser' ? ' (browser recorder)' : ''}… tap the microphone to stop` : startingRecording ? 'If Firefox asks, allow microphone access · Tap again to cancel' : 'Tap the microphone to speak · Changes need your confirmation'}</div>
         {active.length > 0 && <button className="upcoming-peek" onClick={() => setView('upcoming')}><Clock3 size={17} /><span>Next: {active[0].title}</span><strong>{dateLabel(active[0].nextDueAt)}</strong><ChevronRight size={17} /></button>}
       </section>}
       {view === 'upcoming' && <section className="page"><div className="page-heading"><div className="eyebrow">STAY ON TRACK</div><h1>Upcoming</h1><p>{active.length} active reminder{active.length === 1 ? '' : 's'}</p></div>

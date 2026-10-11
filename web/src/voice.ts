@@ -1,7 +1,27 @@
 export type VoiceRecording = {
   stop: () => Promise<Blob>;
   cancel: () => Promise<void>;
+  mode: 'wav' | 'browser';
 };
+
+export function microphoneErrorMessage(error: unknown) {
+  if (error instanceof DOMException) {
+    if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError')
+      return 'Microphone access was blocked. Allow it in Firefox’s site permissions and try again.';
+    if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError')
+      return 'No microphone was found on this device.';
+    if (error.name === 'NotReadableError' || error.name === 'TrackStartError')
+      return 'Firefox could not use the microphone. Close other apps using it and try again.';
+  }
+  return error instanceof Error ? error.message : 'Could not start the microphone. Please try again.';
+}
+
+export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+  });
+}
 
 export function encodeWav(chunks: Float32Array[], sourceRate: number): Blob {
   if (!Number.isFinite(sourceRate) || sourceRate < 8000) throw new Error('Invalid microphone sample rate.');
@@ -52,17 +72,25 @@ async function mediaRecorderFallback(stream: MediaStream): Promise<VoiceRecordin
   const chunks: Blob[] = [];
   recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
   return {
+    mode: 'browser',
     stop: () => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        stream.getTracks().forEach(track => track.stop());
+        reject(new Error('Firefox did not finish the recording. Please try again.'));
+      }, 3000);
       recorder.onerror = event => {
+        clearTimeout(timer);
         stream.getTracks().forEach(track => track.stop());
         reject(new Error(`Recording failed: ${event.type}`));
       };
       recorder.onstop = () => {
+        clearTimeout(timer);
         stream.getTracks().forEach(track => track.stop());
         const blob = new Blob(chunks, { type: recorder.mimeType || mimeType });
         blob.size ? resolve(blob) : reject(new Error('No microphone audio was captured. Please try again.'));
       };
-      recorder.stop();
+      try { recorder.stop(); }
+      catch (error) { clearTimeout(timer); stream.getTracks().forEach(track => track.stop()); reject(error); }
     }),
     cancel: async () => {
       recorder.onstop = null;
@@ -73,48 +101,75 @@ async function mediaRecorderFallback(stream: MediaStream): Promise<VoiceRecordin
 }
 
 export async function startVoiceRecording(): Promise<VoiceRecording> {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser cannot access the microphone.');
+  // Start Web Audio during the tap. Resuming it after getUserMedia's permission
+  // prompt can leave Firefox waiting forever for another user gesture.
   let context: AudioContext | null = null;
+  let resumed: Promise<void> | null = null;
   try {
     context = new AudioContext();
-    await context.audioWorklet.addModule('/pcm-recorder.js');
-    const source = context.createMediaStreamSource(stream);
-    const processor = new AudioWorkletNode(context, 'pcm-recorder');
-    const silentOutput = context.createGain();
+    resumed = context.resume();
+    void resumed.catch(() => undefined);
+  } catch { if (context) void context.close().catch(() => undefined); context = null; }
+  let stream: MediaStream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (error) { if (context) void context.close().catch(() => undefined); throw error; }
+  if (!context || !resumed) {
+    if (typeof MediaRecorder !== 'undefined') return mediaRecorderFallback(stream);
+    stream.getTracks().forEach(track => track.stop());
+    throw new Error('This browser does not support microphone recording.');
+  }
+  let source: MediaStreamAudioSourceNode | null = null;
+  let processor: AudioWorkletNode | null = null;
+  let silentOutput: GainNode | null = null;
+  try {
+    await withTimeout(resumed, 2500, 'Audio could not start.');
+    await withTimeout(context.audioWorklet.addModule('/pcm-recorder.js'), 4000, 'Audio recorder did not load.');
+    source = context.createMediaStreamSource(stream);
+    processor = new AudioWorkletNode(context, 'pcm-recorder');
+    silentOutput = context.createGain();
     silentOutput.gain.value = 0;
     const chunks: Float32Array[] = [];
     let stopped: (() => void) | null = null;
+    let firstSample: (() => void) | null = null;
+    const ready = new Promise<void>(resolve => { firstSample = resolve; });
     processor.port.onmessage = event => {
-      if (event.data?.type === 'samples') chunks.push(event.data.samples as Float32Array);
+      if (event.data?.type === 'samples') {
+        chunks.push(event.data.samples as Float32Array);
+        firstSample?.(); firstSample = null;
+      }
       if (event.data?.type === 'stopped') stopped?.();
     };
     source.connect(processor);
     processor.connect(silentOutput);
     silentOutput.connect(context.destination);
-    await context.resume();
-    if (context.state !== 'running') throw new Error('Microphone audio is paused.');
+    await withTimeout(ready, 2500, 'The microphone did not produce audio.');
     const sampleRate = context.sampleRate;
     const cleanup = async () => {
-      source.disconnect(); processor.disconnect(); silentOutput.disconnect();
+      processor!.port.onmessage = null;
+      source!.disconnect(); processor!.disconnect(); silentOutput!.disconnect();
       stream.getTracks().forEach(track => track.stop());
-      await context?.close();
+      void context!.close().catch(() => undefined);
     };
     return {
+      mode: 'wav',
       stop: async () => {
         await new Promise<void>(resolve => {
           stopped = resolve;
-          processor.port.postMessage('stop');
-          window.setTimeout(resolve, 500);
+          processor!.port.postMessage('stop');
+          setTimeout(resolve, 500);
         });
         await cleanup();
         return encodeWav(chunks, sampleRate);
       },
       cancel: cleanup,
     };
-  } catch (error) {
-    await context?.close().catch(() => undefined);
+  } catch {
+    source?.disconnect(); processor?.disconnect(); silentOutput?.disconnect();
+    if (processor) processor.port.onmessage = null;
+    void context.close().catch(() => undefined);
     if (typeof MediaRecorder !== 'undefined') return await mediaRecorderFallback(stream);
     stream.getTracks().forEach(track => track.stop());
-    throw error;
+    throw new Error('Firefox could not start audio recording. Please try again.');
   }
 }

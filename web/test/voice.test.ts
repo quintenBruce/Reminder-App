@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { encodeWav } from '../src/voice';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { encodeWav, microphoneErrorMessage, startVoiceRecording, withTimeout } from '../src/voice';
+
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('WAV microphone upload', () => {
   it('writes a valid mono 16 kHz PCM file from 48 kHz chunks', async () => {
@@ -20,5 +22,127 @@ describe('WAV microphone upload', () => {
 
   it('rejects a capture with no audio samples', () => {
     expect(() => encodeWav([], 48000)).toThrow('No microphone audio was captured');
+  });
+});
+
+describe('microphone startup', () => {
+  it('explains a denied microphone permission', () => {
+    expect(microphoneErrorMessage(new DOMException('Denied', 'NotAllowedError')))
+      .toContain('Allow it in Firefox');
+  });
+
+  it('times out a pending audio operation', async () => {
+    vi.useFakeTimers();
+    const pending = withTimeout(new Promise<void>(() => undefined), 1000, 'Audio did not start.');
+    const failure = expect(pending).rejects.toThrow('Audio did not start.');
+    await vi.advanceTimersByTimeAsync(1000);
+    await failure;
+  });
+
+  it('uses the browser recorder when AudioContext never resumes', async () => {
+    vi.useFakeTimers();
+    const track = { stop: vi.fn() };
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) } });
+    vi.stubGlobal('AudioContext', class {
+      resume() { return new Promise<void>(() => undefined); }
+      close() { return Promise.resolve(); }
+    });
+    vi.stubGlobal('MediaRecorder', class {
+      static isTypeSupported(type: string) { return type === 'audio/webm'; }
+      mimeType = 'audio/webm';
+      state = 'inactive';
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(_stream: MediaStream, _options: { mimeType: string }) {}
+      start() { this.state = 'recording'; }
+      stop() {
+        this.state = 'inactive';
+        this.ondataavailable?.({ data: new Blob(['audio'], { type: this.mimeType }) });
+        this.onstop?.();
+      }
+    });
+
+    const starting = startVoiceRecording();
+    await vi.advanceTimersByTimeAsync(2600);
+    const capture = await starting;
+    expect(capture.mode).toBe('browser');
+    const audio = await capture.stop();
+    expect(audio.type).toBe('audio/webm');
+    expect(audio.size).toBeGreaterThan(0);
+    expect(track.stop).toHaveBeenCalled();
+  });
+
+  it('uses the browser recorder when a running worklet produces no samples', async () => {
+    vi.useFakeTimers();
+    const track = { stop: vi.fn() };
+    const close = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) } });
+    vi.stubGlobal('AudioContext', class {
+      audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
+      destination = {};
+      resume() { return Promise.resolve(); }
+      close = close;
+      createMediaStreamSource() { return { connect: vi.fn(), disconnect: vi.fn() }; }
+      createGain() { return { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }; }
+    });
+    vi.stubGlobal('AudioWorkletNode', class {
+      port = { onmessage: null, postMessage: vi.fn() };
+      connect() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('MediaRecorder', class {
+      static isTypeSupported(type: string) { return type === 'audio/webm'; }
+      mimeType = 'audio/webm';
+      state = 'inactive';
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      start() { this.state = 'recording'; }
+      stop() { this.state = 'inactive'; this.ondataavailable?.({ data: new Blob(['audio']) }); this.onstop?.(); }
+    });
+
+    const starting = startVoiceRecording();
+    await vi.advanceTimersByTimeAsync(2600);
+    const capture = await starting;
+    expect(capture.mode).toBe('browser');
+    expect(close).toHaveBeenCalled();
+    await capture.cancel();
+    expect(track.stop).toHaveBeenCalled();
+  });
+
+  it('stops a working worklet and returns captured WAV audio', async () => {
+    vi.useFakeTimers();
+    const track = { stop: vi.fn() };
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) } });
+    vi.stubGlobal('AudioContext', class {
+      audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
+      destination = {};
+      sampleRate = 48000;
+      resume() { return Promise.resolve(); }
+      close() { return Promise.resolve(); }
+      createMediaStreamSource() { return { connect: vi.fn(), disconnect: vi.fn() }; }
+      createGain() { return { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }; }
+    });
+    vi.stubGlobal('AudioWorkletNode', class {
+      port = {
+        onmessage: null as ((event: { data: unknown }) => void) | null,
+        postMessage: (message: string) => {
+          if (message === 'stop') this.port.onmessage?.({ data: { type: 'stopped' } });
+        },
+      };
+      connect() {
+        setTimeout(() => this.port.onmessage?.({ data: { type: 'samples', samples: new Float32Array(4800).fill(0.5) } }), 1);
+      }
+      disconnect() {}
+    });
+
+    const starting = startVoiceRecording();
+    await vi.advanceTimersByTimeAsync(10);
+    const capture = await starting;
+    expect(capture.mode).toBe('wav');
+    const audio = await capture.stop();
+    expect(audio.type).toBe('audio/wav');
+    expect(audio.size).toBeGreaterThan(44);
+    expect(track.stop).toHaveBeenCalled();
   });
 });

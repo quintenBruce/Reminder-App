@@ -34,7 +34,9 @@ steps:
         pnpm run build:functions
         node scripts/prepare-deploy.mjs
         pnpm run build:web
-  - name: us-docker.pkg.dev/firebase-cli/us/firebase:15.33.0
+  # Firebase CLI 15.33.0 fails while packaging Functions with
+  # "TypeError: minimatch is not a function" in this Cloud Build image.
+  - name: us-docker.pkg.dev/firebase-cli/us/firebase:15.9.0
     id: deploy
     args:
       - deploy

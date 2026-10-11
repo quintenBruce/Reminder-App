@@ -10,6 +10,7 @@ import OpenAI, { toFile } from 'openai';
 import { nextOccurrence, previewOccurrences, validateNudge, validateRule, type ReminderRecord, type ScheduleRule } from '../../shared/src/schedule';
 import { afterDelivery, applyReminderAction } from '../../shared/src/reminderState';
 import { deliveryDiagnostic } from './deliveryDiagnostics';
+import { errorFields, observe } from './observability';
 
 initializeApp();
 const db = getFirestore();
@@ -132,7 +133,7 @@ async function enforceQuota(uid: string, kind: 'transcribe' | 'interpret') {
   });
 }
 
-export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstances: 2, memory: '512MiB', enforceAppCheck: true }, async request => {
+export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstances: 2, memory: '512MiB', enforceAppCheck: true }, request => observe('transcribeAudio', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const { audioBase64, mimeType } = request.data ?? {};
   const mediaType = typeof mimeType === 'string' ? mimeType.split(';')[0].trim().toLowerCase() : '';
@@ -142,17 +143,22 @@ export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstanc
   }
   const bytes = Buffer.from(audioBase64, 'base64');
   if (!bytes.length || bytes.length > 5_000_000) throw new HttpsError('invalid-argument', 'Recording exceeds 5 MB.');
+  trace.stage('audio.validated', { mediaType, audioBytes: bytes.length });
   await enforceQuota(uid, 'transcribe');
+  trace.stage('quota.accepted');
   const extension = mediaType.split('/')[1];
   const file = await toFile(bytes, `recording.${extension}`, { type: mediaType });
+  const aiStartedAt = Date.now();
   const result = await openai().audio.transcriptions.create({ model: 'gpt-transcribe', file });
+  trace.stage('transcription.received', { aiDurationMs: Date.now() - aiStartedAt });
   const transcript = typeof result.text === 'string' ? result.text.trim() : '';
   if (!transcript) throw new HttpsError('failed-precondition', 'No speech was detected. Please try again and speak for a few seconds.');
   if (transcript.length > 4000) throw new HttpsError('invalid-argument', 'Speech was too long. Please try a shorter message.');
+  trace.stage('transcript.validated', { transcriptLength: transcript.length });
   return { transcript };
-});
+}));
 
-export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances: 2, enforceAppCheck: true }, async request => {
+export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances: 2, enforceAppCheck: true }, request => observe('proposeAction', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const utterance = textValue(request.data?.text, 4000);
   const conversationId = stringValue(request.data?.conversationId, 100) || randomUUID();
@@ -169,7 +175,10 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     ? pendingSnap.data() as Proposal : null;
   const candidates = candidatesSnap.docs.map(doc => record(doc.data(), doc.id));
   const history = turnsSnap.docs.reverse().map(doc => ({ user: doc.get('user'), assistant: doc.get('assistant') }));
+  trace.stage('context.loaded', { conversationId, candidateCount: candidates.length, historyCount: history.length, hasPendingProposal: !!pending });
   await enforceQuota(uid, 'interpret');
+  trace.stage('quota.accepted');
+  const aiStartedAt = Date.now();
   const response = await openai().responses.create({
     model, store: false, reasoning: { effort: 'low' },
     max_output_tokens: 2000,
@@ -178,6 +187,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     input: JSON.stringify({ utterance, history, pendingProposal: pending ? { action: pending.action, targetId: pending.targetId, title: pending.title, notes: pending.notes, rule: pending.rule, repeatUntilDoneMinutes: pending.repeatUntilDoneMinutes, snoozeMinutes: pending.snoozeMinutes } : null,
       candidates: candidates.map(r => ({ id: r.id, title: r.title, rule: r.rule, repeatUntilDoneMinutes: r.repeatUntilDoneMinutes, nextDueAt: r.nextDueAt })) }),
   });
+  trace.stage('interpretation.received', { aiDurationMs: Date.now() - aiStartedAt, outputLength: response.output_text?.length ?? 0 });
   if (!response.output_text) throw new HttpsError('internal', 'No interpretation returned.');
   const d = JSON.parse(response.output_text) as ModelDecision;
   const candidate = candidates.find(r => r.id === d.targetId);
@@ -189,6 +199,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   if (d.action === 'list' || d.action === 'clarify') {
     const reply = d.action === 'list' ? (candidates.length ? candidates.slice(0, 8).map(r => r.title).join('; ') : 'You have no active reminders.') : textValue(d.message, 500);
     await turns.add({ user: utterance, assistant: reply, createdAt: now });
+    trace.stage('conversation.saved', { conversationId, action: d.action });
     return { conversationId, reply, proposal: null };
   }
   let rule: ScheduleRule | null = null;
@@ -218,8 +229,9 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     root(uid).collection('proposals').doc(proposal.id).set(proposal),
     turns.add({ user: utterance, assistant: readback, proposalId: proposal.id, createdAt: now }),
   ]);
+  trace.stage('proposal.saved', { conversationId, proposalId: proposal.id, action: d.action, reminderId: candidate?.id ?? null });
   return { conversationId, reply: readback, proposal };
-});
+}));
 
 async function applyAction(uid: string, reminderId: string, action: 'done' | 'dismiss' | 'snooze', snoozeMinutes: number | null, requestId: string, expectedVersion?: number | null, occurrenceId?: string) {
   const ref = root(uid).collection('reminders').doc(reminderId);
@@ -244,32 +256,39 @@ async function applyAction(uid: string, reminderId: string, action: 'done' | 'di
   });
 }
 
-export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, async request => {
+export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, request => observe('applyOccurrenceAction', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const reminderId = textValue(request.data?.reminderId, 100);
   const action = request.data?.action;
   if (!['done', 'dismiss', 'snooze'].includes(action)) throw new HttpsError('invalid-argument', 'Invalid action.');
   const requestId = textValue(request.data?.requestId, 100);
-  return applyAction(uid, reminderId, action, request.data?.snoozeMinutes ?? null, requestId, null, stringValue(request.data?.occurrenceId, 150) || undefined);
-});
+  const result = await applyAction(uid, reminderId, action, request.data?.snoozeMinutes ?? null, requestId, null, stringValue(request.data?.occurrenceId, 150) || undefined);
+  trace.stage('action.committed', { reminderId, requestId, action });
+  return result;
+}));
 
-export const confirmProposal = onCall({ region, enforceAppCheck: true }, async request => {
+export const confirmProposal = onCall({ region, enforceAppCheck: true }, request => observe('confirmProposal', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const proposalId = textValue(request.data?.proposalId, 100);
   const ref = root(uid).collection('proposals').doc(proposalId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError('not-found', 'Proposal not found.');
   const p = snap.data() as Proposal;
-  if (p.committedResult) return p.committedResult;
+  trace.stage('proposal.loaded', { proposalId, action: p.action, reminderId: p.targetId });
+  if (p.committedResult) {
+    trace.stage('proposal.alreadyCommitted', { proposalId });
+    return p.committedResult;
+  }
   if (Date.now() > p.expiresAt) throw new HttpsError('failed-precondition', 'Proposal expired. Please ask again.');
   if (['done', 'dismiss', 'snooze'].includes(p.action)) {
     const result = await applyAction(uid, p.targetId!, p.action as 'done' | 'dismiss' | 'snooze', p.snoozeMinutes, proposalId, p.baseVersion);
     await ref.update({ committedResult: result });
+    trace.stage('proposal.committed', { proposalId, reminderId: p.targetId, action: p.action });
     return result;
   }
   const target = p.targetId ? root(uid).collection('reminders').doc(p.targetId) : root(uid).collection('reminders').doc();
   const now = Date.now();
-  return db.runTransaction(async tx => {
+  const result = await db.runTransaction(async tx => {
     const [freshProposal, prior] = await Promise.all([tx.get(ref), p.targetId ? tx.get(target) : Promise.resolve(null)]);
     const current = freshProposal.data() as Proposal;
     if (current.committedResult) return current.committedResult;
@@ -297,17 +316,20 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true }, async r
     tx.create(root(uid).collection('events').doc(randomUUID()), { reminderId: target.id, action: p.action, at: now });
     return result;
   });
-});
+  trace.stage('proposal.committed', { proposalId, reminderId: target.id, action: p.action });
+  return result;
+}));
 
-export const registerDevice = onCall({ region, enforceAppCheck: true }, async request => {
+export const registerDevice = onCall({ region, enforceAppCheck: true }, request => observe('registerDevice', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const token = textValue(request.data?.token, 4096);
   const test = request.data?.test === true;
   const id = createHash('sha256').update(token).digest('hex');
   try {
     await getMessaging().send({ token, data: { title: 'Remind is ready', body: 'Notifications are connected.', reminderId: 'test', url: '/' } }, !test);
+    trace.stage('push.checkAccepted', { test });
   } catch (error) {
-    const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'unknown';
+    const code = errorFields(error).errorCode;
     warn('Push registration test was rejected', { uid, code });
     throw new HttpsError('failed-precondition', `Push registration failed (${code}). Please try again.`);
   }
@@ -321,11 +343,11 @@ export const registerDevice = onCall({ region, enforceAppCheck: true }, async re
     tx.set(ownerRef, { uid, updatedAt: Date.now() });
     tx.set(root(uid).collection('devices').doc(id), { token, updatedAt: Date.now() });
   });
-  info('Push device registered', { uid, test });
+  trace.stage('device.registered', { test });
   return { registered: true };
-});
+}));
 
-export const unregisterDevice = onCall({ region, enforceAppCheck: true }, async request => {
+export const unregisterDevice = onCall({ region, enforceAppCheck: true }, request => observe('unregisterDevice', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const token = textValue(request.data?.token, 4096);
   const id = createHash('sha256').update(token).digest('hex');
@@ -335,30 +357,50 @@ export const unregisterDevice = onCall({ region, enforceAppCheck: true }, async 
     if (owner.get('uid') === uid) tx.delete(ownerRef);
     tx.delete(root(uid).collection('devices').doc(id));
   });
+  trace.stage('device.unregistered');
   return { unregistered: true };
-});
+}));
 
-export const deleteConversation = onCall({ region, enforceAppCheck: true }, async request => {
+export const deleteConversation = onCall({ region, enforceAppCheck: true }, request => observe('deleteConversation', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const conversationId = textValue(request.data?.conversationId, 100);
   const ref = root(uid).collection('conversations').doc(conversationId);
+  let deletedTurns = 0;
   while (true) {
     const page = await ref.collection('turns').limit(400).get();
     if (page.empty) break;
     const batch = db.batch();
     page.docs.forEach(doc => batch.delete(doc.ref));
     await batch.commit();
+    deletedTurns += page.size;
+    trace.stage('turns.deleted', { conversationId, deletedTurns });
   }
   await ref.delete();
+  trace.stage('conversation.deleted', { conversationId, deletedTurns });
   return { deleted: true };
-});
+}));
 
 export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', region, maxInstances: 1 }, async () => {
+  const operationId = randomUUID();
+  const startedAt = Date.now();
   const now = Date.now();
-  const due = await db.collectionGroup('reminders').where('status', '==', 'active').where('nextDueAt', '<=', now).orderBy('nextDueAt').limit(50).get();
+  let due;
+  try {
+    due = await db.collectionGroup('reminders').where('status', '==', 'active').where('nextDueAt', '<=', now).orderBy('nextDueAt').limit(50).get();
+  } catch (reason) {
+    warn('dispatchDue.queryFailed', { operation: 'dispatchDue', operationId, durationMs: Date.now() - startedAt, ...errorFields(reason) });
+    throw reason;
+  }
+  if (due.empty) return;
+  info('dispatchDue.started', { operation: 'dispatchDue', operationId, dueCount: due.size });
+  let claimedCount = 0;
+  let skippedCount = 0;
+  let acceptedCount = 0;
+  let retryCount = 0;
+  try {
   for (const doc of due.docs) {
     const uid = doc.ref.parent.parent?.id;
-    if (!uid || doc.ref.parent.parent?.parent?.id !== 'users') continue;
+    if (!uid || doc.ref.parent.parent?.parent?.id !== 'users') { skippedCount++; continue; }
     const claimed = await db.runTransaction(async tx => {
       const snap = await tx.get(doc.ref);
       if (!snap.exists) return null;
@@ -367,8 +409,11 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
       tx.update(doc.ref, { leaseUntil: now + 90_000 });
       return r;
     });
-    if (!claimed) continue;
+    if (!claimed) { skippedCount++; continue; }
+    claimedCount++;
     const scheduledAt = claimed.currentScheduledAt ?? claimed.nextDueAt!;
+    const occurrenceId = `${claimed.id}_${scheduledAt}`;
+    info('dispatchDue.claimed', { operation: 'dispatchDue', operationId, uid, reminderId: claimed.id, occurrenceId, scheduledAt });
     const devices = await root(uid).collection('devices').get();
     const targets = devices.docs.filter(device => typeof device.get('token') === 'string' && device.get('token'));
     const selected = targets.slice(0, 500);
@@ -390,15 +435,15 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
           warn('Could not remove an invalid push token', { uid, reminderId: claimed.id });
         }
       } catch (error) {
-        const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'unknown';
+        const code = errorFields(error).errorCode;
         diagnostic = deliveryDiagnostic(selected.length, undefined, code);
       }
     }
     const delivered = diagnostic.acceptedCount > 0;
     const finishAt = Date.now();
-    await db.runTransaction(async tx => {
+    const persisted = await db.runTransaction(async tx => {
       const snap = await tx.get(doc.ref);
-      if (!snap.exists || snap.get('leaseUntil') !== now + 90_000 || snap.get('version') !== claimed.version) return;
+      if (!snap.exists || snap.get('leaseUntil') !== now + 90_000 || snap.get('version') !== claimed.version) return false;
       const r = record(snap.data()!, snap.id);
       const transition = afterDelivery(r, scheduledAt, finishAt, delivered);
       tx.update(doc.ref, transition.update);
@@ -406,9 +451,20 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
         reminderId: r.id, scheduledAt, lastAttemptAt: finishAt,
         status: transition.occurrenceStatus, attempts: FieldValue.increment(1), ...diagnostic,
       }, { merge: true });
+      return true;
     });
-    const details = { uid, reminderId: claimed.id, scheduledAt, ...diagnostic };
+    if (!persisted) {
+      warn('dispatchDue.resultNotSaved', { operation: 'dispatchDue', operationId, uid, reminderId: claimed.id, occurrenceId });
+      continue;
+    }
+    if (delivered) acceptedCount++; else retryCount++;
+    const details = { operation: 'dispatchDue', operationId, uid, reminderId: claimed.id, occurrenceId, scheduledAt, ...diagnostic };
     if (delivered) info('Reminder push accepted', details);
     else warn('Reminder push not accepted', details);
+  }
+  info('dispatchDue.completed', { operation: 'dispatchDue', operationId, dueCount: due.size, claimedCount, skippedCount, acceptedCount, retryCount, durationMs: Date.now() - startedAt });
+  } catch (reason) {
+    warn('dispatchDue.failed', { operation: 'dispatchDue', operationId, dueCount: due.size, claimedCount, skippedCount, acceptedCount, retryCount, durationMs: Date.now() - startedAt, ...errorFields(reason) });
+    throw reason;
   }
 });

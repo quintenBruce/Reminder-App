@@ -95,6 +95,41 @@ If deployment reports **`secretmanager.secrets.get`** or **`secretmanager.secret
 
 If deployment fails while preparing the Functions upload with **`Could not read source directory`** and **`TypeError: minimatch is not a function`**, the Firebase CLI image failed during source packaging. `cloudbuild.yaml` pins the deploy image to **`15.9.0`**, a version reported to package Functions successfully in the [upstream Firebase CLI issue](https://github.com/firebase/firebase-tools/issues/10053). Run the trigger on the latest `master` commit containing that pin. The message about removing links and shortcuts is a generic wrapper around the `minimatch` error; do not remove project files to fix it.
 
+## 6. View backend logs
+
+Open [Logs Explorer for this project](https://console.cloud.google.com/logs/query?project=reminder-app-a2150). Set the time range in the upper right. Paste **one** query below into the query editor and click **Run query**. New structured entries appear only after this version is deployed and the operation runs.
+
+All reminder send attempts and scheduler summaries:
+
+```text
+resource.type="cloud_run_revision"
+jsonPayload.operation="dispatchDue"
+```
+
+All backend steps for one account (copy `uid` from the `users/{uid}` path in Firestore):
+
+```text
+resource.type="cloud_run_revision"
+jsonPayload.uid="PASTE_UID_HERE"
+```
+
+All stages of one request (copy `operationId` from any matching log entry):
+
+```text
+resource.type="cloud_run_revision"
+jsonPayload.operationId="PASTE_OPERATION_ID_HERE"
+```
+
+One reminder's send attempts (copy the reminder document ID):
+
+```text
+resource.type="cloud_run_revision"
+jsonPayload.operation="dispatchDue"
+jsonPayload.reminderId="PASTE_REMINDER_ID_HERE"
+```
+
+For an `operation.failed` entry, check `stage`, `errorCode`, and `durationMs`. For a push attempt, check `reason`, `deviceCount`, `acceptedCount`, `rejectedCount`, and `failureCodes`. `no_devices` means notification registration did not persist for that account; use **Settings > Enable & test**. An `accepted` push confirms FCM accepted it, not that Firefox displayed it. Firestore `users/{uid}/occurrences` holds the persisted delivery outcome. Cloud Logging may also show platform-generated error entries with exception details; app-authored structured entries intentionally omit content and error messages. [Firebase logging guide](https://firebase.google.com/docs/functions/writing-and-viewing-logs); [Cloud Logging query syntax](https://docs.cloud.google.com/logging/docs/view/query-library).
+
 ## Local verification and deployment files
 
 The Cloud Build pipeline runs `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm run typecheck:web`, `pnpm run build:functions`, and `pnpm run build:web`. The root pnpm lockfile pins local and Cloud Build dependencies; `functions/package-lock.json` pins the separate dependency install done by the Cloud Functions Node buildpack. `scripts/prepare-deploy.mjs` validates required settings and generates the ignored `functions/.env` file. Firestore rules permit each verified Google account to read only its own `users/{uid}` subtree; browser writes are denied. `firebase.json` has no build hook; always build before deploying manually.

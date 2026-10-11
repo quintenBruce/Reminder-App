@@ -9,8 +9,8 @@ self.addEventListener('push', event => {
   const occurrenceId = data.occurrenceId || reminderId;
   event.waitUntil(self.registration.showNotification(title, {
     body,
-    icon: '/icon.svg',
-    badge: '/icon.svg',
+    icon: '/icon-192.png',
+    badge: '/badge-96.png',
     tag: occurrenceId,
     data: { reminderId, occurrenceId, url: data.url || '/' },
     actions: reminderId === 'test' ? [] : [

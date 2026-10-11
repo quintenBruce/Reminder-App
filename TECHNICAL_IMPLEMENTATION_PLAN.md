@@ -6,7 +6,7 @@ Status: planned, not implemented. This document refines [PLAN.md](PLAN.md). Pric
 
 | Layer | Choice | Language |
 | --- | --- | --- |
-| Android installable PWA | React, Vite, Firebase Web SDK, service worker | TypeScript, HTML, CSS |
+| Firefox for Android installable PWA | React, Vite, Firebase Web SDK, service worker | TypeScript, HTML, CSS |
 | Shared domain logic | Validated action/schedule types and recurrence calculator | TypeScript |
 | API and background jobs | Cloud Functions for Firebase, 2nd generation, Node runtime | TypeScript |
 | Data and access | Cloud Firestore, Firebase Authentication, Firestore rules | Firestore rules language, JSON configuration |
@@ -38,7 +38,7 @@ The scheduled function is not one job per reminder. A single job handles all due
 - A PWA can follow the system's **light/dark mode**. Standard web theming does not provide a dependable way to read the phone's Material You wallpaper palette, so the app will use its own coordinated Material 3 palette. A user-selectable accent can be added later.
 - Main screens: Home/conversation, Upcoming, Reminder detail/edit, History, Settings. The Home screen puts voice capture at thumb reach, shows the transcript and confirmation card, and gives clear success/error feedback. Text input remains available.
 - Voice is recorded after the user taps the mic and sent when they stop recording. Use the recommended OpenAI file transcription path for bounded clips, then a text model for interpretation. Browser speech synthesis reads the reply aloud; the full reply is always visible. This is push-to-talk, not an always-open live voice session.
-- Full reminder text may appear on the lock screen, per user preference. Add a later privacy toggle for generic alerts.
+- Full reminder text may appear on the lock screen, per user preference. Add a later privacy toggle for generic alerts. Install from Firefox for Android's menu; no Chrome dependency.
 
 ## Proposed repository layout
 
@@ -114,11 +114,11 @@ For Firebase: one minute scheduler produces about 43,200 function invocations in
 3. Implement shared schedule types, recurrence calculator, DST and interval fixtures, Firestore rules, and transaction-based mutations.
 4. Add transcription, structured proposals, conversational target resolution, spoken readback, confirmation, and clarification turns.
 5. Add FCM enrollment, due dispatcher, retry ledger, notification actions, and overdue handling.
-6. Review source and configuration without running the application here. Provide device test steps for the user: install in Chrome, grant permissions, test 5-minute reminder, background/closed browser, restart, offline recovery, recurrence, DST, Done/Snooze, and account denial.
+6. Review source and configuration without running the application here. Provide device test steps for the user: install in Firefox for Android, grant permissions, test 5-minute reminder, background/closed browser, restart, offline recovery, recurrence, DST, Done/Snooze, and account denial.
 
 ## Remaining device detail
 
-Before final push behavior is accepted, record the Samsung model, Android version, and browser version. Chrome is the initial target. Validate notification buttons and background push on that device.
+Before final push behavior is accepted, record the Samsung model, Android version, and Firefox version. Firefox for Android is the initial target. Validate installability, notification permission, push with the PWA in the background, push after its tab is closed, push after Firefox is swiped away, and notification action buttons on that device. The last two cases may differ and are not guaranteed by documentation. If the Firebase Messaging SDK cannot register or deliver there, evaluate standards-based Web Push with the same PWA and backend before changing the product architecture. In-app Done and Snooze remain available regardless of notification button support.
 
 ## References
 
@@ -126,6 +126,10 @@ Before final push behavior is accepted, record the Samsung model, Android versio
 - [Scheduled functions and Scheduler cost](https://firebase.google.com/docs/functions/schedule-functions)
 - [Firebase pricing](https://firebase.google.com/pricing)
 - [Firebase web push setup](https://firebase.google.com/docs/cloud-messaging/web/get-started)
+- [Firebase JavaScript SDK browser support](https://firebase.google.com/docs/web/environments-js-sdk)
+- [Install web apps with Firefox for Android](https://support.mozilla.org/en-US/kb/use-web-apps-firefox-android)
+- [Firefox for Android web push](https://support.mozilla.org/en-US/kb/push-notifications-firefox)
+- [Firefox notification action support](https://bugzilla.mozilla.org/show_bug.cgi?id=1959931)
 - [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
 - [GPT-6 Luna model pricing](https://developers.openai.com/api/docs/models/gpt-6-luna)
 - [OpenAI transcription workflow](https://developers.openai.com/api/docs/guides/transcription)

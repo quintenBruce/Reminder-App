@@ -2,7 +2,7 @@
 
 ## Decisions
 
-- Build an installable PWA for the user's Samsung Android phone, targeting Chrome first.
+- Build an installable PWA for the user's Samsung Android phone, targeting Firefox for Android. No Chrome installation is required.
 - Use a new, dedicated Firebase project on the Blaze plan. Use Firebase Hosting, Google sign-in, Firestore, Cloud Functions, Cloud Scheduler, and Firebase Cloud Messaging (FCM).
 - Allow only one configured Google account. Push-to-talk input and spoken replies are in scope from the first version. Every voice-requested create, edit, cancel, dismiss, and snooze action gets a readback and explicit confirmation before it is committed. Direct UI and notification buttons act on tap.
 - Support conversational references to existing reminders from the first version. Initial minimum repeat interval: five minutes. Notification delivery is best effort, with no promise of exact timing or offline delivery.
@@ -11,7 +11,7 @@
 ## Architecture
 
 ```text
-Android Chrome PWA (mic, chat, reminder list, notification service worker)
+Android Firefox PWA (mic, chat, reminder list, notification service worker)
   -> Firebase Auth (one allowlisted UID)
   -> Firebase HTTPS / callable functions
        -> OpenAI transcription + structured intent extraction
@@ -30,7 +30,7 @@ The LLM interprets a request and proposes actions. It does not calculate future 
 2. **Interpret:** Transcribe audio with OpenAI. Give the model the current time, device time zone, recent conversation, and a bounded list of candidate reminders. Require a structured proposal: create, edit, cancel, dismiss occurrence, snooze occurrence, list, or clarification. The server validates all referenced reminder IDs and fields.
 3. **Review:** Show and speak a concise readback, including title, first due time, recurrence, end condition, and any repeat-until-done behavior. Preview the next five occurrences. Wait for explicit confirmation. Treat a second voice turn such as “yes, but at 10” as a revision of the pending proposal.
 4. **Manage:** Upcoming, overdue, completed, and canceled views. Search and filter. Open a reminder for edit, dismiss current occurrence, snooze, or cancel the series. A recurring reminder's Done/Dismiss action affects one occurrence unless the user explicitly cancels the series. Swiping away an Android notification is not treated as completion.
-5. **Notify:** Ask for browser notification permission during setup, register the PWA's service worker and FCM token, and send a test notification. Show Done and Snooze actions where Chrome supports them. Tapping a notification opens the relevant reminder. The app always provides the same actions inside its UI.
+5. **Notify:** Ask for browser notification permission during setup, register the PWA's service worker and FCM token, and send a test notification. Show Done and Snooze actions where the installed Firefox version supports them. Tapping a notification opens the relevant reminder. The app always provides the same actions inside its UI.
 6. **Speak back:** Use browser speech synthesis initially, with visible text as the fallback. Add OpenAI speech generation only if device voice quality is inadequate; this avoids an extra API charge for each response.
 
 ## Schedule semantics
@@ -61,11 +61,11 @@ The LLM interprets a request and proposes actions. It does not calculate future 
 
 ## Delivery phases
 
-1. **Foundation:** Git repository, TypeScript workspace, Firebase configuration for a dedicated project, PWA shell, service worker, Google sign-in, allowlist rules, and deployment configuration. No production deployment until the project and billing setup are reviewed.
+1. **Foundation and browser check:** Git repository, TypeScript workspace, Firebase configuration for a dedicated project, PWA shell, service worker, Google sign-in, allowlist rules, and deployment configuration. Validate install and a test push on the user's Firefox for Android before relying on it for reminder delivery. No production deployment until the project and billing setup are reviewed.
 2. **Deterministic reminder core:** schema, recurrence calculator, DST handling, occurrence preview, CRUD, idempotent mutations, and representative schedule fixtures.
 3. **Conversation:** push-to-talk upload, transcription, structured action proposals, target resolution for edits/canceling, clarification turns, spoken readback, and mandatory confirmation.
 4. **Delivery:** FCM enrollment and test push, minute scheduler, occurrence ledger, retry and stale-token handling, in-app and notification Done/Snooze actions.
-5. **Polish and validation:** accessibility, offline cached viewing, settings, cost controls, export/delete, and a real-device checklist covering backgrounded Chrome, phone restart, network outage, time-zone change, DST, duplicate sends, and permission revocation.
+5. **Polish and validation:** accessibility, offline cached viewing, settings, cost controls, export/delete, and a real-device checklist covering backgrounded Firefox, phone restart, network outage, time-zone change, DST, duplicate sends, and permission revocation.
 
 ## Acceptance criteria
 
@@ -84,7 +84,7 @@ Firebase is the preferred choice because the user already uses Google Cloud and 
 - Dedicated Firebase/Google Cloud project ID and region.
 - The Google account to allowlist, resolved to Firebase UID during setup.
 - OpenAI API key supplied through Secret Manager, never committed.
-- Samsung phone Android version and preferred browser, to validate push and notification actions on the actual device.
+- Samsung phone model, Android version, and Firefox version, to validate push and notification actions on the actual device.
 
 ## Sources checked 2026-10-11
 
@@ -95,5 +95,7 @@ Firebase is the preferred choice because the user already uses Google Cloud and 
 - [Firebase pricing](https://firebase.google.com/pricing)
 - [OpenAI transcription](https://developers.openai.com/api/docs/guides/speech-to-text)
 - [OpenAI structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
-- [Android Chrome notification actions](https://developer.chrome.com/blog/notification-actions/)
+- [Install web apps with Firefox for Android](https://support.mozilla.org/en-US/kb/use-web-apps-firefox-android)
+- [Firefox for Android web push](https://support.mozilla.org/en-US/kb/push-notifications-firefox)
+- [Firefox notification action support](https://bugzilla.mozilla.org/show_bug.cgi?id=1959931)
 - [Web push delivery](https://web.dev/articles/push-notifications-overview)

@@ -2,50 +2,67 @@
 
 This guide deploys the TypeScript PWA, Firestore rules, and Cloud Functions from GitHub to Firebase project `reminder-app-a2150`. Any verified Google account can sign in; each account has a private reminder list and conversation history. One successful deployment is enough to start using the app.
 
-## 1. Have these ready
+## 1. What to copy, and where it goes
 
-- The [existing GitHub repository](https://github.com/quintenBruce/Reminder-App) and its default branch (`main` or `master`).
-- A Google account with permission to create a Google Cloud project, attach billing, and administer the GitHub repository.
-- An OpenAI API key. It goes only into Secret Manager, never into GitHub, `web/.env`, or Cloud Build substitutions.
+Use the Firebase project **`reminder-app-a2150`** in every Firebase and Google Cloud screen below. The GitHub repository is [quintenBruce/Reminder-App](https://github.com/quintenBruce/Reminder-App), and its deployment branch is **`master`**. Your Firebase Web SDK config is already in [cloudbuild.yaml](../cloudbuild.yaml) and [web/.env.example](../web/.env.example); do **not** paste the whole `initializeApp(...)` snippet into either file or into a Cloud Build field. `storageBucket` and `measurementId` are unused.
 
-The Firebase Web config you supplied is already recorded in `cloudbuild.yaml` and `web/.env.example`: project ID, API key, auth domain, app ID, and messaging sender ID. These are public client configuration, not server credentials. You still need the Web Push VAPID **public** key and reCAPTCHA v3 **site** key. The app does not currently use Firebase Storage or Analytics, so `storageBucket` and `measurementId` are not needed.
+Four values still need to be entered. Complete the relevant row **before** the first Cloud Build trigger run:
 
-## 2. Create the dedicated project and set billing
+| Value to copy | Copy it from | Paste it into | When |
+| --- | --- | --- | --- |
+| Web Push **public VAPID key** | Firebase **Project settings > Cloud Messaging > Web configuration > Web Push certificates** | Cloud Build trigger **Substitution variables**: name `_FIREBASE_VAPID_KEY`, value = the copied public key | After generating the Web Push key pair; before the first trigger run |
+| reCAPTCHA v3 **secret key** | [reCAPTCHA Admin Console](https://www.google.com/recaptcha/admin) after registering the app domain | Firebase **Security > App Check > Apps > your Web app > Register**, in the reCAPTCHA v3 **secret key** field | Immediately after creating the reCAPTCHA keys |
+| reCAPTCHA v3 **site key** | The same reCAPTCHA registration | Cloud Build trigger **Substitution variables**: name `_RECAPTCHA_SITE_KEY`, value = the copied site key | Before the first trigger run |
+| OpenAI API key | [OpenAI API key page](https://platform.openai.com/api-keys) | Google Cloud **Secret Manager > Create secret**: name `OPENAI_API_KEY`, value = your OpenAI key | Before the first trigger run |
 
-1. In [Firebase console](https://console.firebase.google.com/), open the project you created: `reminder-app-a2150`. Google Analytics is optional for this app.
-2. Upgrade the project to **Blaze** and attach your existing Google Cloud billing account. Functions and scheduled dispatch require billing. In [Google Cloud Billing > Budgets & alerts](https://console.cloud.google.com/billing/), create a monthly budget, for example $10, with alerts at $2 and $5. A budget alert is not a hard spending cap.
-3. In Firebase **Build > Firestore Database**, create the **default** database in **Native mode** at `us-south1` (Dallas), the region you selected. Keep the Cloud Build `_FUNCTIONS_REGION` substitution at `us-south1` so the callable and scheduled functions are colocated with Firestore. Changing the database location later requires migration. Start in production mode; the repository rules isolate accounts after deployment.
-4. In Firebase **Build > Authentication > Sign-in method**, enable **Google** and select a project support email. In **Settings > Authorized domains**, make sure `reminder-app-a2150.firebaseapp.com` is present.
-5. The Web app is already registered, and its config is in the repository. Open the app at **https://reminder-app-a2150.firebaseapp.com** for normal use, including the first sign-in. This canonical URL matches `authDomain`, which supports Firebase redirect sign-in in Firefox. The `.web.app` URL needs additional redirect-domain configuration if you later choose to use it for sign-in. There is no special first-time URL or UID setup.
-6. In **Project settings > Cloud Messaging > Web configuration**, create a Web Push certificate/key pair and copy its **public VAPID key**.
-7. Register `https://reminder-app-a2150.firebaseapp.com` with [reCAPTCHA v3](https://www.google.com/recaptcha/admin/create). In Firebase **Security > App Check**, register the Web app with the reCAPTCHA v3 **secret** key. Copy the corresponding **site** key for the build substitution. Keep the secret key in the reCAPTCHA/Firebase consoles. App Check is already enforced in callable function code. Wait until the phone works before enabling additional Firestore product enforcement in the App Check console.
-8. In [Google Cloud Secret Manager](https://console.cloud.google.com/security/secret-manager), create a secret named exactly `OPENAI_API_KEY` with your OpenAI key as its value. The functions bind this secret at deployment. You can alternatively set it with `firebase functions:secrets:set OPENAI_API_KEY` from an authenticated CLI.
+The VAPID **private** key and reCAPTCHA **secret** key never go into GitHub or Cloud Build substitutions. The OpenAI key never goes into `web/.env`, GitHub, or substitutions. Firebase Web config and the two public keys are client configuration; Firebase describes its Web API key as [public by design](https://firebase.google.com/docs/projects/api-keys).
+
+## 2. Prepare Firebase and copy the keys
+
+1. Open [Firebase console](https://console.firebase.google.com/) and select **`reminder-app-a2150`**. In **Usage and billing**, upgrade to **Blaze** and attach your Google Cloud billing account if you have not already. Functions and scheduled dispatch require billing. In [Google Cloud Billing > Budgets & alerts](https://console.cloud.google.com/billing/), create a monthly $10 budget with alerts at $2 and $5. A budget alert is not a spending cap.
+2. In Firebase **Build > Firestore Database**, create the **default** database if it does not exist. Choose **Native mode**, location **`us-south1` (Dallas)**, and **production mode**. If it already exists, check its location; do not create another database. Database location is difficult to change later.
+3. In Firebase **Build > Authentication > Sign-in method**, open **Google**, switch it **on**, select a project support email, and **Save**. Then open Authentication **Settings > Authorized domains** and check that **`reminder-app-a2150.firebaseapp.com`** appears. Add it there if it is missing.
+4. In Firebase **Project settings > Your apps**, confirm that the Web app with app ID **`1:831855773727:web:4c432059e91512daf5ad2a`** is listed. Its config is already in the repository; there is nothing to copy from this screen. If that app ID is absent, stop and check that you selected the correct Firebase project.
+5. In Firebase **Project settings > Cloud Messaging > Web configuration > Web Push certificates**, click **Generate key pair** if none exists. Copy the **public key** shown there. Keep it available for the trigger field **`_FIREBASE_VAPID_KEY`** in section 3. Do not copy the private key. [Firebase's Web Push instructions](https://firebase.google.com/docs/cloud-messaging/web/get-started)
+6. In the [reCAPTCHA Admin Console](https://www.google.com/recaptcha/admin/create), register a **reCAPTCHA v3** site. Add the domain **`reminder-app-a2150.firebaseapp.com`** (domain only, without `https://`). Copy both keys. In Firebase **Security > App Check > Apps**, select the Web app, choose the reCAPTCHA v3 provider, paste the **secret key** into Firebase's secret-key field, and finish registration. Keep the **site key** for the trigger field **`_RECAPTCHA_SITE_KEY`** in section 3. App Check is already enforced in callable function code. Wait until the phone works before enabling additional Firestore enforcement in the App Check console. [Firebase App Check instructions](https://firebase.google.com/docs/app-check/web/recaptcha-provider)
+7. On the [OpenAI API key page](https://platform.openai.com/api-keys), create a regular project API key if you do not already have one; copy its value. Do not use an organization **Admin API key**. In [Google Cloud Secret Manager](https://console.cloud.google.com/security/secret-manager?project=reminder-app-a2150), select the same Google Cloud project, click **Create secret**, enter **`OPENAI_API_KEY`** as the name, paste the copied OpenAI key into the **secret value** field, and click **Create secret**. Copy no value from Secret Manager into GitHub or the Cloud Build trigger. The functions' `defineSecret('OPENAI_API_KEY')` binding reads it at runtime. [OpenAI's API key setup](https://developers.openai.com/api/docs/quickstart); [Firebase secret parameters](https://firebase.google.com/docs/functions/config-env)
+
+The app's normal URL will be **https://reminder-app-a2150.firebaseapp.com** after deployment, including for the first sign-in. It matches the configured `authDomain` and avoids Firefox's cross-origin redirect issue. The `.web.app` URL requires additional redirect-domain setup if you later choose to use it. There is no first-login UID setup. [Firebase redirect guidance](https://firebase.google.com/docs/auth/web/redirect-best-practices)
 
 Firebase may prompt you to enable Cloud Functions, Cloud Build, Artifact Registry, Cloud Run, Cloud Scheduler, Eventarc, Firebase Rules, and Secret Manager APIs at first deployment. Enable them in this same project. The Cloud Scheduler job is created by the scheduled function; do not create a separate job manually.
 
-## 3. Connect GitHub to Cloud Build
+## 3. Connect GitHub and enter the two public keys
 
-1. Enable the [Cloud Build API](https://console.cloud.google.com/apis/library/cloudbuild.googleapis.com) for the dedicated project.
-2. In [Cloud Build > Triggers](https://console.cloud.google.com/cloud-build/triggers), choose **Connect repository**. Select **GitHub (Cloud Build GitHub App)**, authorize the app for only this repository if you prefer, and connect it. Initial connection requires GitHub repository admin permission.
-3. Create a **user-managed service account** named `remind-deployer` in [IAM & Admin > Service Accounts](https://console.cloud.google.com/iam-admin/serviceaccounts). Use it as the trigger's **Service account**. Grant it, on this project, **Firebase Admin** (`roles/firebase.admin`), **API Keys Viewer** (`roles/serviceusage.apiKeysViewer`), **Cloud Functions Admin** (`roles/cloudfunctions.admin`), **Service Account User** (`roles/iam.serviceAccountUser`), and **Logs Writer** (`roles/logging.logWriter`) for the configured Cloud Logging destination. Google lists the first four for Firebase and function deployment; Cloud Build requires Logs Writer for a user-managed account writing build logs to Cloud Logging. A new project can require additional build or service-agent permissions during the first 2nd generation function deploy; use the explicit failed permission in the Cloud Build log to add only the needed role. Avoid a downloaded JSON service-account key.
-4. Create a trigger named `remind-deploy` with **Push to a branch**, select the connected repo, set the branch pattern to `^main$` or `^master$` to match its actual default branch, and set **Cloud Build configuration file** to `cloudbuild.yaml`. Choose **Cloud Logging only** if asked for a log destination with the custom service account.
-5. In the trigger's **Substitution variables**, set the two still-missing public keys below. The other values are already defaults in `cloudbuild.yaml` and can be overridden in the trigger if the Firebase project changes.
+1. In [Google Cloud console](https://console.cloud.google.com/?project=reminder-app-a2150), check the project selector at the top: it must say **`reminder-app-a2150`**. Open the [Cloud Build API](https://console.cloud.google.com/apis/library/cloudbuild.googleapis.com?project=reminder-app-a2150) and click **Enable** if needed.
+2. Open [IAM & Admin > Service Accounts](https://console.cloud.google.com/iam-admin/serviceaccounts?project=reminder-app-a2150). Click **Create service account**; name it **`remind-deployer`**. In its **Grant this service account access** step, add these project roles: **Firebase Admin**, **API Keys Viewer**, **Cloud Functions Admin**, **Service Account User**, and **Logs Writer**. Finish creation and note the service-account email shown in the list. Do not create or download a JSON key. These roles are for the build identity; the first deployment may report a more specific missing permission, which you can resolve from the Cloud Build log.
+3. Open [Cloud Build > Triggers](https://console.cloud.google.com/cloud-build/triggers?project=reminder-app-a2150). Choose **Connect repository**, select the **Cloud Build GitHub App**, and authorize **`quintenBruce/Reminder-App`**. This is Google's build integration with GitHub, not the Codex GitHub plugin. Connect the repository to this Google Cloud project.
+4. Click **Create trigger**. Use these exact settings:
 
-   | Substitution | Value |
+   | Trigger field | Enter/select |
    | --- | --- |
-   | `_FUNCTIONS_REGION` | `us-south1` (Dallas; already the pipeline default) |
-   | `_FIREBASE_API_KEY` | Already set from the supplied Web config |
-   | `_FIREBASE_AUTH_DOMAIN` | `reminder-app-a2150.firebaseapp.com` (already set) |
-   | `_FIREBASE_APP_ID` | Already set from the supplied Web config |
-   | `_FIREBASE_MESSAGING_SENDER_ID` | Already set from the supplied Web config |
-   | `_FIREBASE_VAPID_KEY` | Web Push **public** VAPID key |
-   | `_RECAPTCHA_SITE_KEY` | reCAPTCHA v3 **site** key |
+   | Name | `remind-deploy` |
+   | Event | **Push to a branch** |
+   | Repository | `quintenBruce/Reminder-App` |
+   | Branch pattern | `^master$` |
+   | Configuration | **Cloud Build configuration file** |
+   | Configuration file location | `cloudbuild.yaml` |
+   | Service account | The `remind-deployer` account from step 2 |
+   | Logs, if prompted | **Cloud Logging only** |
 
-   `VITE_FIREBASE_PROJECT_ID` comes from the Cloud Build `$PROJECT_ID` built-in variable; create the trigger in `reminder-app-a2150`. The pipeline validates values, installs from the committed lockfile, runs tests, checks types, builds both packages, then deploys Hosting, rules, and functions. The pipeline never receives the OpenAI key.
+5. In that same trigger form, find **Substitution variables**. Add **two rows**; paste the *entire copied key string* as each value, without quotation marks or extra spaces:
+
+   | Variable name | Paste this value |
+   | --- | --- |
+   | `_FIREBASE_VAPID_KEY` | Firebase Web Push **public** key copied in section 2, step 5 |
+   | `_RECAPTCHA_SITE_KEY` | reCAPTCHA v3 **site** key copied in section 2, step 6 |
+
+   Click **Create/Save** only after both rows are present. Do not put the reCAPTCHA **secret** key or OpenAI key here. `_FUNCTIONS_REGION=us-south1` and the Firebase Web config are already defaults in `cloudbuild.yaml`; the project ID comes from Cloud Build's `$PROJECT_ID`. If the trigger form shows those existing defaults, leave them as they are. [Google Cloud trigger documentation](https://docs.cloud.google.com/build/docs/automating-builds/create-manage-triggers)
+
+The build file runs tests, typechecks, and builds, then deploys Firebase Hosting, Firestore rules, and Functions. You do not need to copy build output into Firebase manually.
 
 ## 4. Deploy and sign in
 
-1. Push the committed source to the connected GitHub default branch. Watch the `remind-deploy` run in Cloud Build. Resolve any explicit first-deploy API or IAM prompts, then rerun the trigger. Wait until the deployment succeeds.
+1. The source is **already pushed** to GitHub `master`. Creating a trigger may not run it for an earlier push. In [Cloud Build > Triggers](https://console.cloud.google.com/cloud-build/triggers?project=reminder-app-a2150), find **`remind-deploy`**, select **Run** or **Run trigger**, choose **`master`** if asked, and start the first build. Open its build result and wait for both **verify-and-build** and **deploy** to succeed. If a step fails, read that step's error; after fixing the setting or permission, use **Run trigger** again. After this first successful run, future pushes to `master` start the deployment automatically.
 2. On your Samsung phone or desktop Firefox, open [https://reminder-app-a2150.firebaseapp.com](https://reminder-app-a2150.firebaseapp.com) and use **Continue with Google**. Any verified Google account can sign up. Every account receives its own `users/{uid}` data in Firestore; account A cannot read or change account B's reminders or conversations through the app.
 3. When switching accounts on one phone, use **Settings > Sign out**. The app unregisters that account's push token before signing out. Each account must use **Enable & test** after signing in to receive its own notifications. If sign-out cannot reach the server, retry it while online so the old account's push registration can be removed.
 

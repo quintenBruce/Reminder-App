@@ -83,6 +83,7 @@ h1, h2, .brand, .eyebrow { font-family: Manrope, system-ui, sans-serif; }
 .send-button { background: var(--surface-soft); color: var(--primary); }
 .mic-button { width: 49px; height: 49px; background: #4d5bc4; color: #fff; box-shadow: 0 5px 13px rgba(77,91,196,.25); }
 .mic-button.is-recording { background: #d45166; animation: pulse 1s infinite alternate; }
+.mic-button.is-starting { background: #a56c2c; animation: pulse 1s infinite alternate; }
 @keyframes pulse { to { box-shadow: 0 0 0 8px rgba(212,81,102,.17); } }
 .composer-hint { text-align: center; color: var(--muted); font-size: 11px; margin: 12px 0 15px; }
 .upcoming-peek { display: flex; align-items: center; gap: 9px; width: 100%; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); color: var(--text); padding: 13px 15px; text-align: left; font-size: 12px; }

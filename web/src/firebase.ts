@@ -54,11 +54,13 @@ export function callable<TInput, TOutput>(name: string) {
 }
 
 export async function enablePush(onForeground: (message: string) => void) {
-  if (!('serviceWorker' in navigator) || !('Notification' in window) || !(await isSupported())) {
+  if (!('serviceWorker' in navigator) || !('Notification' in window)) {
     throw new Error('Push is unavailable in this browser. In-app reminders still work.');
   }
-  const permission = await Notification.requestPermission();
+  // Request permission before the first await so Firefox sees the user's tap.
+  const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
   if (permission !== 'granted') throw new Error('Notification permission was not granted.');
+  if (!(await isSupported())) throw new Error('Push is unavailable in this browser. In-app reminders still work.');
   const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
   const messaging = getMessaging(app);
   const token = await getToken(messaging, {
@@ -66,7 +68,15 @@ export async function enablePush(onForeground: (message: string) => void) {
     serviceWorkerRegistration: registration,
   });
   if (!token) throw new Error('Firefox did not return a push token.');
-  localStorage.setItem('remind-push-registration', JSON.stringify({ uid: auth.currentUser?.uid, token }));
   await callable<{ token: string }, { registered: boolean }>('registerDevice')({ token });
+  localStorage.setItem('remind-push-registration', JSON.stringify({ uid: auth.currentUser?.uid, token }));
   onMessage(messaging, payload => onForeground(payload.data?.title || 'Reminder received'));
+}
+
+export function needsPushRegistration(uid: string) {
+  if (!('Notification' in window) || Notification.permission === 'denied') return false;
+  try {
+    const saved = JSON.parse(localStorage.getItem('remind-push-registration') || 'null') as { uid?: string; token?: string } | null;
+    return saved?.uid !== uid || !saved.token;
+  } catch { return true; }
 }

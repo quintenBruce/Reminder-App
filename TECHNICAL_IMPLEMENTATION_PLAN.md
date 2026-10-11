@@ -1,6 +1,6 @@
 # Technical implementation plan
 
-Status: planned, not implemented. This document refines [PLAN.md](PLAN.md). Prices and platform behavior were checked on 2026-10-11 and must be rechecked before deployment.
+Status: local source implementation in progress; not built, deployed, or device-tested. This document refines [PLAN.md](PLAN.md). Prices and platform behavior were checked on 2026-10-11 and must be rechecked before deployment.
 
 ## Selected stack and languages
 
@@ -68,7 +68,7 @@ Store records below `users/{uid}/...`. Client reads are restricted to the allowl
 
 ## Function contracts
 
-1. `transcribeAudio` (HTTPS): verify Firebase ID token and app origin; enforce clip size/duration; forward the file to OpenAI; return transcript; discard audio. A typed request skips this function.
+1. `transcribeAudio` (callable): verify Firebase Auth and App Check; enforce clip size and a client recording duration cap; forward the file to OpenAI; return transcript; discard audio. A typed request skips this function.
 2. `proposeAction` (callable): accept text and conversation ID; fetch a bounded set of relevant reminders; call the Responses API with a strict action schema; validate target IDs and schedule fields; compute the next five times; persist a short-lived proposal; return a readback or clarification.
 3. `confirmProposal` (callable): check owner, proposal expiry, target version, and idempotency key; transactionally create/update/cancel/act; return committed state. If the reminder changed since proposal creation, require a new proposal.
 4. `listReminders`/Firestore read subscription: authenticated reads for upcoming/history and relevant target candidates. Limit result size and pagination.

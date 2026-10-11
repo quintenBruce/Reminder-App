@@ -13,7 +13,6 @@ initializeApp();
 const db = getFirestore();
 const openAiKey = defineSecret('OPENAI_API_KEY');
 const region = process.env.FUNCTIONS_REGION || 'us-south1';
-const ownerUid = process.env.OWNER_UID;
 const model = process.env.OPENAI_MODEL || 'gpt-6.1-sol';
 
 type Action = 'create' | 'edit' | 'cancel' | 'done' | 'dismiss' | 'snooze' | 'list' | 'clarify';
@@ -52,11 +51,12 @@ const decisionSchema = {
     'hour', 'minute', 'daysOfWeek', 'dayOfMonth', 'month', 'endAt', 'repeatUntilDoneMinutes', 'snoozeMinutes', 'clearRepeatUntilDone', 'message'],
 } as const;
 
-function requireOwner(request: CallableRequest): string {
+function requireGoogleUser(request: CallableRequest): string {
   const uid = request.auth?.uid;
   const provider = request.auth?.token.firebase?.sign_in_provider;
-  if (!ownerUid || !uid || uid !== ownerUid || provider !== 'google.com') {
-    throw new HttpsError('permission-denied', 'This account is not allowed.');
+  const verified = request.auth?.token.email_verified;
+  if (!uid || provider !== 'google.com' || verified !== true) {
+    throw new HttpsError('permission-denied', 'Sign in with a verified Google account.');
   }
   return uid;
 }
@@ -118,16 +118,20 @@ function openai() { return new OpenAI({ apiKey: openAiKey.value() }); }
 async function enforceQuota(uid: string, kind: 'transcribe' | 'interpret') {
   const day = new Date().toISOString().slice(0, 10);
   const ref = root(uid).collection('quotas').doc(`${day}_${kind}`);
+  const globalRef = db.collection('config').doc(`quota_${day}_${kind}`);
   await db.runTransaction(async tx => {
-    const snap = await tx.get(ref);
+    const [snap, globalSnap] = await Promise.all([tx.get(ref), tx.get(globalRef)]);
     const count = snap.exists ? Number(snap.get('count') || 0) : 0;
+    const globalCount = globalSnap.exists ? Number(globalSnap.get('count') || 0) : 0;
     if (count >= 100) throw new HttpsError('resource-exhausted', 'Daily voice and interpretation limit reached.');
+    if (globalCount >= 30) throw new HttpsError('resource-exhausted', 'The app-wide daily AI limit was reached. Try again tomorrow.');
     tx.set(ref, { count: count + 1, updatedAt: Date.now() });
+    tx.set(globalRef, { count: globalCount + 1, updatedAt: Date.now() });
   });
 }
 
 export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstances: 2, memory: '512MiB', enforceAppCheck: true }, async request => {
-  const uid = requireOwner(request);
+  const uid = requireGoogleUser(request);
   const { audioBase64, mimeType } = request.data ?? {};
   if (typeof audioBase64 !== 'string' || audioBase64.length > 7_000_000 ||
       typeof mimeType !== 'string' || !['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav'].includes(mimeType)) {
@@ -143,7 +147,7 @@ export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstanc
 });
 
 export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances: 2, enforceAppCheck: true }, async request => {
-  const uid = requireOwner(request);
+  const uid = requireGoogleUser(request);
   const utterance = textValue(request.data?.text, 4000);
   const conversationId = stringValue(request.data?.conversationId, 100) || randomUUID();
   const zone = stringValue(request.data?.timeZone, 80) || 'America/Chicago';
@@ -235,7 +239,7 @@ async function applyAction(uid: string, reminderId: string, action: 'done' | 'di
 }
 
 export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, async request => {
-  const uid = requireOwner(request);
+  const uid = requireGoogleUser(request);
   const reminderId = textValue(request.data?.reminderId, 100);
   const action = request.data?.action;
   if (!['done', 'dismiss', 'snooze'].includes(action)) throw new HttpsError('invalid-argument', 'Invalid action.');
@@ -244,7 +248,7 @@ export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, a
 });
 
 export const confirmProposal = onCall({ region, enforceAppCheck: true }, async request => {
-  const uid = requireOwner(request);
+  const uid = requireGoogleUser(request);
   const proposalId = textValue(request.data?.proposalId, 100);
   const ref = root(uid).collection('proposals').doc(proposalId);
   const snap = await ref.get();
@@ -290,16 +294,38 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true }, async r
 });
 
 export const registerDevice = onCall({ region, enforceAppCheck: true }, async request => {
-  const uid = requireOwner(request);
+  const uid = requireGoogleUser(request);
   const token = textValue(request.data?.token, 4096);
   const id = createHash('sha256').update(token).digest('hex');
-  await root(uid).collection('devices').doc(id).set({ token, updatedAt: Date.now() });
+  const ownerRef = db.collection('deviceTokens').doc(id);
+  await db.runTransaction(async tx => {
+    const previous = await tx.get(ownerRef);
+    const previousUid = previous.get('uid');
+    if (typeof previousUid === 'string' && previousUid !== uid) {
+      tx.delete(root(previousUid).collection('devices').doc(id));
+    }
+    tx.set(ownerRef, { uid, updatedAt: Date.now() });
+    tx.set(root(uid).collection('devices').doc(id), { token, updatedAt: Date.now() });
+  });
   await getMessaging().send({ token, data: { title: 'Remind is ready', body: 'Notifications are connected.', reminderId: 'test', url: '/' } });
   return { registered: true };
 });
 
+export const unregisterDevice = onCall({ region, enforceAppCheck: true }, async request => {
+  const uid = requireGoogleUser(request);
+  const token = textValue(request.data?.token, 4096);
+  const id = createHash('sha256').update(token).digest('hex');
+  const ownerRef = db.collection('deviceTokens').doc(id);
+  await db.runTransaction(async tx => {
+    const owner = await tx.get(ownerRef);
+    if (owner.get('uid') === uid) tx.delete(ownerRef);
+    tx.delete(root(uid).collection('devices').doc(id));
+  });
+  return { unregistered: true };
+});
+
 export const deleteConversation = onCall({ region, enforceAppCheck: true }, async request => {
-  const uid = requireOwner(request);
+  const uid = requireGoogleUser(request);
   const conversationId = textValue(request.data?.conversationId, 100);
   const ref = root(uid).collection('conversations').doc(conversationId);
   while (true) {
@@ -314,11 +340,11 @@ export const deleteConversation = onCall({ region, enforceAppCheck: true }, asyn
 });
 
 export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', region, maxInstances: 1 }, async () => {
-  if (!ownerUid) throw new Error('OWNER_UID is not configured.');
   const now = Date.now();
   const due = await db.collectionGroup('reminders').where('status', '==', 'active').where('nextDueAt', '<=', now).orderBy('nextDueAt').limit(50).get();
   for (const doc of due.docs) {
-    if (doc.ref.parent.parent?.id !== ownerUid) continue;
+    const uid = doc.ref.parent.parent?.id;
+    if (!uid || doc.ref.parent.parent?.parent?.id !== 'users') continue;
     const claimed = await db.runTransaction(async tx => {
       const snap = await tx.get(doc.ref);
       if (!snap.exists) return null;
@@ -329,7 +355,7 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
     });
     if (!claimed) continue;
     const scheduledAt = claimed.currentScheduledAt ?? claimed.nextDueAt!;
-    const devices = await root(ownerUid).collection('devices').get();
+    const devices = await root(uid).collection('devices').get();
     const tokens = devices.docs.map(d => d.get('token') as string).filter(Boolean);
     let delivered = false;
     if (tokens.length) {
@@ -350,7 +376,7 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
       const r = record(snap.data()!, snap.id);
       const transition = afterDelivery(r, scheduledAt, finishAt, delivered);
       tx.update(doc.ref, transition.update);
-      tx.set(root(ownerUid).collection('occurrences').doc(`${r.id}_${scheduledAt}`), {
+      tx.set(root(uid).collection('occurrences').doc(`${r.id}_${scheduledAt}`), {
         reminderId: r.id, scheduledAt, lastAttemptAt: finishAt,
         status: transition.occurrenceStatus, attempts: FieldValue.increment(1),
       }, { merge: true });

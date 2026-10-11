@@ -4,7 +4,7 @@
 
 - Build an installable PWA for the user's Samsung Android phone, targeting Firefox for Android. No Chrome installation is required.
 - Use a new, dedicated Firebase project on the Blaze plan. Use Firebase Hosting, Google sign-in, Firestore, Cloud Functions, Cloud Scheduler, and Firebase Cloud Messaging (FCM).
-- Allow only one configured Google account. Push-to-talk input and spoken replies are in scope from the first version. Every voice-requested create, edit, cancel, dismiss, and snooze action gets a readback and explicit confirmation before it is committed. Direct UI and notification buttons act on tap.
+- Allow any verified Google account to sign up, with fully separate data per account. Push-to-talk input and spoken replies are in scope from the first version. Every voice-requested create, edit, cancel, dismiss, and snooze action gets a readback and explicit confirmation before it is committed. Direct UI and notification buttons act on tap.
 - Support conversational references to existing reminders from the first version. Initial minimum repeat interval: five minutes. Notification delivery is best effort, with no promise of exact timing or offline delivery.
 - Dismiss hides the current alert but does not mark it Done or stop a repeat-until-done schedule. Keep text conversation history until the user deletes it.
 - Do not run the application, Gradle, Java, or other app/build commands during development, per the workspace instruction. Verification will use source review and documented device test steps for the user.
@@ -13,7 +13,7 @@
 
 ```text
 Android Firefox PWA (mic, chat, reminder list, notification service worker)
-  -> Firebase Auth (one allowlisted UID)
+  -> Firebase Auth (verified Google account, separate UID data)
   -> Firebase HTTPS / callable functions
        -> OpenAI transcription + structured intent extraction
        -> deterministic schedule validator and recurrence calculator
@@ -44,7 +44,7 @@ The LLM interprets a request and proposes actions. It does not calculate future 
 
 ## Data and operations
 
-- `users/{uid}`: allowed account settings, preferred time zone, notification preferences.
+- `users/{uid}`: account settings, preferred time zone, notification preferences.
 - `users/{uid}/reminders/{id}`: title, notes, original request, normalized rule, status, version, next due instant, timestamps.
 - `users/{uid}/occurrences/{id}`: reminder ID, scheduled instant, state, delivery attempt, dismissal/completion/snooze metadata, and a stable idempotency key.
 - `users/{uid}/devices/{id}`: FCM registration, browser metadata, last seen time, notification permission state.
@@ -55,14 +55,14 @@ The LLM interprets a request and proposes actions. It does not calculate future 
 
 ## Security and privacy
 
-- Use Google sign-in, then enforce the exact allowlisted Firebase UID in Firestore rules **and** every function. Do not rely on email text alone. Put the UID in configuration after the first sign-in and verify the Google provider.
+- Allow any verified Google account to sign up. Use its Firebase UID as the data boundary: Firestore rules permit reads only under that account's `users/{uid}` path, and every callable function uses the authenticated UID for server-side operations. Keep browser writes denied.
 - Keep the OpenAI API key in Google Secret Manager and call OpenAI only from functions. Never place it in PWA code or Firestore.
-- Require Firebase Auth on all APIs; enable App Check on callable functions and use request validation, rate limits, audio limits, and a small spend budget. Keep Firestore rules least privilege; only server functions may write occurrence and delivery fields.
+- Require Firebase Auth on all APIs; enable App Check on callable functions and use request validation, per-account and app-wide AI quotas, audio limits, and a small spend budget. Keep Firestore rules least privilege; only server functions may write occurrence and delivery fields.
 - Keep text conversation history until user deletion; send only the relevant subset to OpenAI. Avoid raw audio retention. Provide export and delete for reminder and conversation data. Full reminder text in push payloads is the user's chosen lock-screen default, with a privacy setting later.
 
 ## Delivery phases
 
-1. **Foundation and browser check:** Git repository, TypeScript workspace, Firebase configuration for a dedicated project, PWA shell, service worker, Google sign-in, allowlist rules, and deployment configuration. Validate install and a test push on the user's Firefox for Android before relying on it for reminder delivery. No production deployment until the project and billing setup are reviewed.
+1. **Foundation and browser check:** Git repository, TypeScript workspace, Firebase configuration for a dedicated project, PWA shell, service worker, Google sign-in, account-isolation rules, and deployment configuration. Validate install and a test push on the user's Firefox for Android before relying on it for reminder delivery. No production deployment until the project and billing setup are reviewed.
 2. **Deterministic reminder core:** schema, recurrence calculator, DST handling, occurrence preview, CRUD, idempotent mutations, and representative schedule fixtures.
 3. **Conversation:** push-to-talk upload, transcription, structured action proposals, target resolution for edits/canceling, clarification turns, spoken readback, and mandatory confirmation.
 4. **Delivery:** FCM enrollment and test push, minute scheduler, occurrence ledger, retry and stale-token handling, in-app and notification Done/Snooze actions.
@@ -74,7 +74,7 @@ The LLM interprets a request and proposes actions. It does not calculate future 
 - A spoken “move that to 9” and “cancel my medicine reminder” resolve the intended reminder or ask for clarification when multiple reminders match.
 - “Every five minutes until I mark it done” continues after Dismiss and stops after Done; Snooze delays only the current occurrence.
 - A notification reaches the Samsung phone in a normal connected/background state; Done and Snooze update the app's state. An offline or delayed push leaves an accurate overdue record when the app reconnects.
-- Unauthorized accounts cannot read, mutate, or trigger model requests for the user's reminders.
+- Account A cannot read, mutate, or trigger model requests for account B's reminders.
 
 ## Cost and platform choice
 
@@ -82,8 +82,7 @@ Firebase is the preferred choice because the user already uses Google Cloud and 
 
 ## Open setup inputs
 
-- Dedicated Firebase/Google Cloud project ID and region.
-- The Google account to allowlist, resolved to Firebase UID during setup.
+- Firebase/Google Cloud project `reminder-app-a2150` in `us-south1`.
 - OpenAI API key supplied through Secret Manager, never committed.
 - The user has a recent Samsung phone with current Android and Firefox. Record exact versions during the first device validation and check push and notification actions there.
 

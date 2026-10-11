@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithRedirect, signOut } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { getMessaging, getToken, isSupported, onMessage } from 'firebase/messaging';
+import { deleteToken, getMessaging, getToken, isSupported, onMessage } from 'firebase/messaging';
 import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
 
 const config = {
@@ -17,7 +17,6 @@ export const app = initializeApp(config);
 export const auth = getAuth(app);
 export const database = getFirestore(app);
 export const functions = getFunctions(app, import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-south1');
-export const allowedUid = import.meta.env.VITE_OWNER_UID as string | undefined;
 
 if (import.meta.env.VITE_RECAPTCHA_SITE_KEY) {
   initializeAppCheck(app, {
@@ -31,7 +30,20 @@ export async function signIn() {
   provider.setCustomParameters({ prompt: 'select_account' });
   await signInWithRedirect(auth, provider);
 }
-export async function signOutUser() { await signOut(auth); }
+export async function signOutUser() {
+  const saved = localStorage.getItem('remind-push-registration');
+  if (saved && auth.currentUser) {
+    let registration: { uid: string; token: string } | null = null;
+    try { registration = JSON.parse(saved) as { uid: string; token: string }; }
+    catch { localStorage.removeItem('remind-push-registration'); }
+    if (registration?.uid === auth.currentUser.uid && registration.token) {
+      await callable<{ token: string }, { unregistered: boolean }>('unregisterDevice')({ token: registration.token });
+      localStorage.removeItem('remind-push-registration');
+      try { if (await isSupported()) await deleteToken(getMessaging(app)); } catch { /* Server registration is already removed. */ }
+    }
+  }
+  await signOut(auth);
+}
 
 export function callable<TInput, TOutput>(name: string) {
   return async (data: TInput): Promise<TOutput> => {
@@ -54,6 +66,7 @@ export async function enablePush(onForeground: (message: string) => void) {
     serviceWorkerRegistration: registration,
   });
   if (!token) throw new Error('Firefox did not return a push token.');
+  localStorage.setItem('remind-push-registration', JSON.stringify({ uid: auth.currentUser?.uid, token }));
   await callable<{ token: string }, { registered: boolean }>('registerDevice')({ token });
   onMessage(messaging, payload => onForeground(payload.data?.title || 'Reminder received'));
 }

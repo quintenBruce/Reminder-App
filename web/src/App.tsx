@@ -3,7 +3,7 @@ import { onAuthStateChanged, getRedirectResult, type User } from 'firebase/auth'
 import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Bell, Check, ChevronRight, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
 import type { ReminderRecord } from '../../shared/src/schedule';
-import { allowedUid, auth, callable, database, enablePush, signIn, signOutUser } from './firebase';
+import { auth, callable, database, enablePush, signIn, signOutUser } from './firebase';
 
 type View = 'home' | 'upcoming' | 'history' | 'settings';
 type Theme = 'system' | 'light' | 'dark';
@@ -24,11 +24,12 @@ function dateLabel(ms: number | null | undefined) {
   return new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(ms);
 }
 
-function getConversationId() {
-  const prior = localStorage.getItem('remind-conversation-id');
+function getConversationId(uid: string) {
+  const key = `remind-conversation-id:${uid}`;
+  const prior = localStorage.getItem(key);
   if (prior) return prior;
   const id = crypto.randomUUID();
-  localStorage.setItem('remind-conversation-id', id);
+  localStorage.setItem(key, id);
   return id;
 }
 
@@ -54,7 +55,7 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [view, setView] = useState<View>('home');
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('remind-theme') as Theme) || 'system');
-  const [conversationId, setConversationId] = useState(getConversationId);
+  const [conversationId, setConversationId] = useState('');
   const [turns, setTurns] = useState<Turn[]>([]);
   const [reminders, setReminders] = useState<ReminderRecord[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
@@ -70,7 +71,11 @@ export default function App() {
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, next => { setUser(next); setAuthReady(true); });
+    const unsubscribe = onAuthStateChanged(auth, next => {
+      setReminders([]); setTurns([]); setEvents([]); setProposal(null);
+      setConversationId(next ? getConversationId(next.uid) : '');
+      setUser(next); setAuthReady(true);
+    });
     getRedirectResult(auth).catch(error => setNotice(error.message));
     return unsubscribe;
   }, []);
@@ -85,7 +90,7 @@ export default function App() {
     return () => media.removeEventListener('change', syncColor);
   }, [theme]);
   useEffect(() => {
-    if (!user || user.uid !== allowedUid) return;
+    if (!user || !conversationId || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com')) return;
     const base = collection(database, 'users', user.uid, 'reminders');
     const stopReminders = onSnapshot(base, snapshot => {
       setReminders(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ReminderRecord)));
@@ -100,7 +105,7 @@ export default function App() {
   }, [user, conversationId]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns.length, proposal]);
   useEffect(() => {
-    if (!user || user.uid !== allowedUid) return;
+    if (!user || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com')) return;
     const params = new URLSearchParams(location.search);
     const action = params.get('action');
     const reminderId = params.get('reminder');
@@ -184,7 +189,7 @@ export default function App() {
     try {
       await call.deleteConversation({ conversationId });
       const next = crypto.randomUUID();
-      localStorage.setItem('remind-conversation-id', next);
+      localStorage.setItem(`remind-conversation-id:${user!.uid}`, next);
       setConversationId(next); setProposal(null); setNotice('Conversation deleted.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not delete history.'); }
     finally { setBusy(false); }
@@ -192,13 +197,13 @@ export default function App() {
 
   const active = reminders.filter(r => r.status === 'active').sort((a, b) => (a.nextDueAt ?? Infinity) - (b.nextDueAt ?? Infinity));
   const visible = active.filter(r => r.title.toLowerCase().includes(search.toLowerCase()));
-  const authorized = !!user && !!allowedUid && user.uid === allowedUid;
+  const authorized = !!user && user.emailVerified && user.providerData.some(provider => provider.providerId === 'google.com');
 
   if (!authReady) return <main className="center-screen"><div className="spinner" /><p>Opening Remind…</p></main>;
   if (!authorized) return <main className="center-screen sign-in">
     <div className="logo"><Mic size={34} /></div>
     <h1>Remind</h1><p>Speak naturally. Stay on top of what matters.</p>
-    {user ? <><p className="error">This Google account is not on the allowlist.</p><button className="primary" onClick={signOutUser}>Use another account</button></>
+    {user ? <><p className="error">Sign in with a verified Google account.</p><button className="primary" onClick={() => signOutUser().catch(error => setNotice(error.message))}>Use another account</button></>
       : <button className="primary" onClick={() => signIn().catch(error => setNotice(error.message))}>Continue with Google</button>}
     {notice && <p className="error">{notice}</p>}
   </main>;
@@ -240,7 +245,7 @@ export default function App() {
         <div className="setting-card"><div><strong>Notifications</strong><p>Allow Firefox to send reminders to your phone</p></div><button className="secondary" onClick={() => enablePush(setNotice).then(() => setNotice('Test notification sent.')).catch(error => setNotice(error.message))}>Enable & test</button></div>
         <div className="setting-card"><div><strong>Spoken replies</strong><p>Read responses aloud after voice or text requests</p></div><label className="switch"><input type="checkbox" checked={voiceReply} onChange={event => setVoiceReply(event.target.checked)} /><span /></label></div>
         <div className="setting-card"><div><strong>Conversation history</strong><p>Kept until you delete it. Raw audio is not saved.</p></div><button className="danger-text" disabled={busy} onClick={clearConversation}><Trash2 size={17} /> Delete conversation</button></div>
-        <div className="setting-card"><div><strong>Account</strong><p>{user.email}</p></div><button className="secondary" onClick={signOutUser}>Sign out</button></div>
+        <div className="setting-card"><div><strong>Account</strong><p>{user.email}</p></div><button className="secondary" onClick={() => signOutUser().catch(error => setNotice(error.message))}>Sign out</button></div>
       </section>}
     </main>
     {notice && <div className="toast" role="status"><span>{notice}</span><button aria-label="Dismiss notice" onClick={() => setNotice('')}><X size={16} /></button></div>}

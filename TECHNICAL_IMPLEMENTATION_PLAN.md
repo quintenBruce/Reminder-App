@@ -56,7 +56,7 @@ Build to `web/dist` for Firebase Hosting. Use one TypeScript toolchain and share
 
 ## Data contracts
 
-- `UserSettings`: allowlisted UID, preferred IANA time zone, theme mode, notification preview mode, default snooze interval, and last device time zone.
+- `UserSettings`: Firebase UID, preferred IANA time zone, theme mode, notification preview mode, default snooze interval, and last device time zone.
 - `Reminder`: ID, title, optional notes, original wording, normalized `ScheduleRule`, status, next due UTC instant, version, created/updated timestamps.
 - `ScheduleRule`: discriminated variants for one-time, elapsed interval, daily/weekly/monthly/yearly wall-clock patterns, date limits, exclusions, and repeat-until-done nudges. Minimum elapsed interval: five minutes.
 - `Occurrence`: stable ID derived from reminder ID and scheduled instant, scheduled/delivery times, state (`pending`, `sent`, `done`, `snoozed`, `missed`), attempt count, dismissal timestamp for the current alert, and action timestamps. Dismissal is not a completed state and does not disable later repeat-until-done nudges.
@@ -64,19 +64,19 @@ Build to `web/dist` for Firebase Hosting. Use one TypeScript toolchain and share
 - `ConversationTurn`: transcript or typed text, assistant response, referenced reminder IDs, and optional proposal ID. Retain text until the user deletes the conversation or clears history; send only bounded relevant turns to the model. Do not persist raw audio by default.
 - `Device`: FCM token, last seen, permission status. Remove invalid or stale tokens.
 
-Store records below `users/{uid}/...`. Client reads are restricted to the allowlisted UID. Mutations go through functions so schedule invariants, idempotency keys, and occurrence state cannot be bypassed by a browser write.
+Store records below `users/{uid}/...`. Each verified Google account can read only its own UID subtree. Mutations go through functions so schedule invariants, idempotency keys, and occurrence state cannot be bypassed by a browser write.
 
 ## Function contracts
 
 1. `transcribeAudio` (callable): verify Firebase Auth and App Check; enforce clip size and a client recording duration cap; forward the file to OpenAI; return transcript; discard audio. A typed request skips this function.
 2. `proposeAction` (callable): accept text and conversation ID; fetch a bounded set of relevant reminders; call the Responses API with a strict action schema; validate target IDs and schedule fields; compute the next five times; persist a short-lived proposal; return a readback or clarification.
-3. `confirmProposal` (callable): check owner, proposal expiry, target version, and idempotency key; transactionally create/update/cancel/act; return committed state. If the reminder changed since proposal creation, require a new proposal.
+3. `confirmProposal` (callable): check the signed-in account, proposal expiry, target version, and idempotency key; transactionally create/update/cancel/act; return committed state. If the reminder changed since proposal creation, require a new proposal.
 4. `listReminders`/Firestore read subscription: authenticated reads for upcoming/history and relevant target candidates. Limit result size and pagination.
 5. `registerDevice` (callable): store or refresh the FCM token after notification permission is granted. Send a setup test push.
 6. `dispatchDue` (scheduled): once per UTC minute, claim due records in batches, send FCM, record outcome, and calculate next occurrences. Retry transient failures within a bounded window. Use stable occurrence IDs and notification tags to reduce visible duplicates.
 7. `applyOccurrenceAction` (callable): Done completes the occurrence and stops its repeat-until-done nudges. Dismiss hides only the current alert; the next nudge remains scheduled. Snooze delays only the current occurrence's next alert and leaves the recurrence rule intact. Notification action buttons open the authenticated PWA route and apply the action there; no long-lived privileged token is embedded in a push.
 
-All mutation functions require the allowlisted UID. Add App Check and per-account rate limits before deployment. Return structured error codes for expired proposal, ambiguous target, permission denied, offline, and failed push enrollment.
+All mutation functions require a verified Google account and operate only on that account's UID subtree. Add App Check and per-account rate limits before deployment. Return structured error codes for expired proposal, ambiguous target, permission denied, offline, and failed push enrollment.
 
 ## Time and recurrence rules
 
@@ -88,12 +88,12 @@ All mutation functions require the allowlisted UID. Add App Check and per-accoun
 
 ## Security and deployment
 
-- Create a dedicated Firebase project and enable Blaze. Use Google sign-in; after first login, record the Firebase UID as the sole permitted account in function configuration and Firestore rules. Do not use an email comparison as the only access check.
+- Use the dedicated Firebase project `reminder-app-a2150` and enable Blaze. Allow verified Google accounts to sign up with no bootstrap step. Firebase UID isolates each account in Firestore rules and functions; conversations, reminders, devices, and quotas are separate.
 - Put the OpenAI key in Secret Manager. Set OpenAI project spend alerts and a hard spend limit; set Google Cloud budget alerts, noting that Google Cloud budgets are notifications rather than a universal hard cap.
 - Use `us-south1` (Dallas) for Firestore and functions, per the user's location choice. The function region is a deployment setting shared by the browser and backend; keep it matched to Firestore. Database location is difficult to change later.
 - Deploy static assets to Firebase Hosting over HTTPS. Configure one FCM web push VAPID key and service worker. Restrict function origins, set request size limits, and log delivery outcomes without logging raw audio or secrets.
 - Keep conversation text until user deletion, with clear-history and conversation deletion controls. Keep raw audio ephemeral. Expose reminder and conversation export/delete controls.
-- Use minimum instances of zero and a low maximum instance count for this single-user app. Keep one scheduler job at `* * * * *` in UTC to avoid scheduler DST anomalies.
+- Use minimum instances of zero and a low maximum instance count. Keep one scheduler job at `* * * * *` in UTC to avoid scheduler DST anomalies. Cap AI requests across all accounts to 30 transcriptions and 30 interpretations per UTC day to bound open-signup spending.
 
 ## Monthly cost estimate in USD
 
@@ -106,16 +106,16 @@ Assumptions: 30 days; 20 seconds of audio and 2,000 text input / 500 total billa
 
 GPT-6 Luna would lower those estimates to about **$0.12/month** at 2/day or **$0.59/month** at 10/day under the same assumptions. Keep Sol as the initial model for complex conversational edits; consider Luna only after representative reminder phrases show equal reliability. Confirmation and deterministic validation remain mandatory with either model.
 
-For Firebase: one minute scheduler produces about 43,200 function invocations in a 30-day month, below the published 2 million/month no-cost invocation allowance. FCM is no-cost. A single Cloud Scheduler job is within the current allowance of three no-charge jobs per Google account; otherwise it is $0.10/month. Firestore, Hosting, function compute, Secret Manager, and build artifacts should be within their no-cost allowances at this personal scale **if the account's allowances are available**, but can incur charges. Blaze billing is required for Functions. Allow a practical initial budget of **$10/month total**, with alerts at $2 and $5; review actual usage after the first month.
+For Firebase: one minute scheduler produces about 43,200 function invocations in a 30-day month, below the published 2 million/month no-cost invocation allowance. FCM is no-cost. A single Cloud Scheduler job is within the current allowance of three no-charge jobs per Google account; otherwise it is $0.10/month. Firestore, Hosting, function compute, Secret Manager, and build artifacts may be within no-cost allowances at low usage, but open signup can increase usage and charges. Blaze billing is required for Functions. The app-wide AI quota bounds model calls to 30 transcriptions and 30 interpretations per UTC day. Set an initial budget alert at **$10/month** and review actual usage after the first month; an alert is not a spending cap.
 
 ## Implementation order and review gates
 
-1. Create the Firebase project, region, billing alerts, Google sign-in, UID allowlist, Secret Manager entry, and FCM web credentials.
+1. Configure the Firebase project, region, billing alerts, Google sign-in, Secret Manager entry, and FCM web credentials.
 2. Build the Material 3 PWA shell, theme, mic capture, typed input, Google sign-in, and read-only upcoming/history views.
 3. Implement shared schedule types, recurrence calculator, DST and interval fixtures, Firestore rules, and transaction-based mutations.
 4. Add transcription, structured proposals, conversational target resolution, spoken readback, confirmation, and clarification turns.
 5. Add FCM enrollment, due dispatcher, retry ledger, notification actions, and overdue handling.
-6. Verify with automated tests, typecheck, and production builds, then follow the device test steps in the setup guide: install in Firefox for Android, grant permissions, test a five-minute reminder, background/closed browser, restart, offline recovery, recurrence, DST, Dismiss/Done/Snooze, history deletion, and account denial.
+6. Verify with automated tests, typecheck, and production builds, then follow the device test steps in the setup guide: install in Firefox for Android, grant permissions, test a five-minute reminder, background/closed browser, restart, offline recovery, recurrence, DST, Dismiss/Done/Snooze, history deletion, and account isolation.
 
 ## Remaining device detail
 

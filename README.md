@@ -1,12 +1,12 @@
 # Remind
 
-Personal, Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [TECHNICAL_IMPLEMENTATION_PLAN.md](TECHNICAL_IMPLEMENTATION_PLAN.md). For exact Firebase, Google Cloud, and GitHub setup, use [the deployment guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md).
+Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [TECHNICAL_IMPLEMENTATION_PLAN.md](TECHNICAL_IMPLEMENTATION_PLAN.md). For Firebase, Google Cloud, and GitHub setup, use [the deployment guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md).
 
 ## Implemented source
 
 - Material 3 inspired React/TypeScript PWA with system light/dark mode, a prominent push-to-talk control, spoken readbacks, text input, confirmation cards, upcoming reminders, history, and settings.
-- Firebase Google sign-in with a single UID allowlist; Firestore client reads and server-only writes.
-- Callable functions for recorded-audio transcription, structured conversational proposals, explicit confirmation, direct Done/Dismiss/Snooze, device registration, and conversation deletion.
+- Firebase Google sign-in for any verified Google account; each account has private Firestore data and server-only writes.
+- Callable functions for recorded-audio transcription, structured conversational proposals, explicit confirmation, direct Done/Dismiss/Snooze, device registration and removal, and conversation deletion. AI usage has per-account and app-wide daily limits.
 - Shared recurrence rules for one-time, elapsed intervals, and daily/weekly/monthly/yearly wall-clock schedules, including DST resolution and next-five previews.
 - One scheduled dispatcher per minute and a data-only FCM push worker with Done and Snooze notification actions where Firefox supports them.
 
@@ -14,7 +14,7 @@ Personal, Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [T
 
 The user authorized a build for this project. The committed pnpm lockfile supports `pnpm install --frozen-lockfile`; `functions/package-lock.json` pins the dependencies installed by the Cloud Functions buildpack. Run `pnpm test`, `pnpm run typecheck:web`, `pnpm run build:functions`, and `pnpm run build:web` to verify it. The local checks and production dependency audit passed on 2026-10-11. The production web build has a bundle-size warning, but completes successfully.
 
-[`cloudbuild.yaml`](cloudbuild.yaml) runs those checks and deploys on a GitHub push after the Cloud Build trigger is configured. [`scripts/prepare-deploy.mjs`](scripts/prepare-deploy.mjs) generates ignored deployment files with the owner UID. See [the setup guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md) before connecting the repository. No Firebase project or device test has been completed yet.
+[`cloudbuild.yaml`](cloudbuild.yaml) runs those checks and deploys on a GitHub push after the Cloud Build trigger is configured. The supplied public Firebase Web config is recorded there. [`scripts/prepare-deploy.mjs`](scripts/prepare-deploy.mjs) validates settings and writes the ignored Functions environment file. See [the setup guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md) before connecting the repository. The Firebase project exists, but deployment and device testing are pending.
 
 ## Device acceptance
 

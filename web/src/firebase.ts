@@ -3,7 +3,7 @@ import { getAuth, GoogleAuthProvider, signInWithRedirect, signOut } from 'fireba
 import { getFirestore } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { deleteToken, getMessaging, getToken, isSupported, onMessage } from 'firebase/messaging';
-import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
 
 const config = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -14,16 +14,16 @@ const config = {
 };
 
 export const app = initializeApp(config);
-export const auth = getAuth(app);
-export const database = getFirestore(app);
-export const functions = getFunctions(app, import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-south1');
-
-if (import.meta.env.VITE_RECAPTCHA_SITE_KEY) {
+if (import.meta.env.VITE_RECAPTCHA_ENTERPRISE_KEY) {
   initializeAppCheck(app, {
-    provider: new ReCaptchaV3Provider(import.meta.env.VITE_RECAPTCHA_SITE_KEY),
+    provider: new ReCaptchaEnterpriseProvider(import.meta.env.VITE_RECAPTCHA_ENTERPRISE_KEY),
     isTokenAutoRefreshEnabled: true,
   });
 }
+
+export const auth = getAuth(app);
+export const database = getFirestore(app);
+export const functions = getFunctions(app, import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-south1');
 
 export async function signIn() {
   const provider = new GoogleAuthProvider();

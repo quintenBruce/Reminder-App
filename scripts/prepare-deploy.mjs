@@ -5,7 +5,7 @@ const required = [
   'VITE_FIREBASE_API_KEY', 'VITE_FIREBASE_AUTH_DOMAIN',
   'VITE_FIREBASE_PROJECT_ID', 'VITE_FIREBASE_APP_ID',
   'VITE_FIREBASE_MESSAGING_SENDER_ID', 'VITE_FIREBASE_VAPID_KEY',
-  'VITE_RECAPTCHA_SITE_KEY',
+  'VITE_RECAPTCHA_ENTERPRISE_KEY',
 ];
 const missing = required.filter(name => !process.env[name]?.trim());
 if (missing.length) throw new Error(`Missing deploy settings: ${missing.join(', ')}`);

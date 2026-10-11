@@ -4,6 +4,7 @@ import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestor
 import { Bell, Check, ChevronRight, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
 import type { ReminderRecord } from '../../shared/src/schedule';
 import { auth, callable, database, enablePush, signIn, signOutUser } from './firebase';
+import { startVoiceRecording, type VoiceRecording } from './voice';
 
 type View = 'home' | 'upcoming' | 'history' | 'settings';
 type Theme = 'system' | 'light' | 'dark';
@@ -66,9 +67,14 @@ export default function App() {
   const [recording, setRecording] = useState(false);
   const [notice, setNotice] = useState('');
   const [voiceReply, setVoiceReply] = useState(true);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<VoiceRecording | null>(null);
+  const recordingTimeoutRef = useRef<number | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => () => {
+    if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
+    void recorderRef.current?.cancel();
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, next => {
@@ -147,32 +153,39 @@ export default function App() {
     finally { setBusy(false); }
   }
 
-  async function toggleRecording() {
-    if (recording) { recorderRef.current?.stop(); setRecording(false); return; }
-    if (busy) return;
+  async function finishRecording(capture: VoiceRecording) {
+    if (recorderRef.current !== capture) return;
+    recorderRef.current = null;
+    if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
+    recordingTimeoutRef.current = null;
+    setRecording(false); setBusy(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      const mimeType = ['audio/webm', 'audio/mp4', 'audio/wav'].find(type => MediaRecorder.isTypeSupported(type));
-      if (!mimeType) throw new Error('This browser does not support a recording format the app can transcribe.');
-      const recorder = new MediaRecorder(stream, { mimeType });
-      recorderRef.current = recorder;
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
-      recorder.onstop = async () => {
-        stream.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-        setBusy(true);
-        try {
-          const audioBase64 = await blobToBase64(new Blob(chunks, { type: mimeType }));
-          const { transcript } = await call.transcribe({ audioBase64, mimeType });
-          setBusy(false);
-          await sendText(transcript);
-        } catch (error) { setBusy(false); setNotice(error instanceof Error ? error.message : 'Transcription failed.'); }
-      };
-      recorder.start(); setRecording(true);
-      window.setTimeout(() => { if (recorder.state === 'recording') { recorder.stop(); setRecording(false); } }, 60_000);
-    } catch (error) { streamRef.current?.getTracks().forEach(track => track.stop()); streamRef.current = null; setNotice(error instanceof Error ? error.message : 'Microphone unavailable.'); }
+      const audio = await capture.stop();
+      if (audio.size > 5_000_000) throw new Error('Recording exceeds 5 MB. Please try a shorter message.');
+      const audioBase64 = await blobToBase64(audio);
+      const { transcript } = await call.transcribe({ audioBase64, mimeType: audio.type });
+      setBusy(false);
+      await sendText(transcript);
+    } catch (error) { setBusy(false); setNotice(error instanceof Error ? error.message : 'Transcription failed.'); }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      if (recorderRef.current) await finishRecording(recorderRef.current);
+      return;
+    }
+    if (busy) return;
+    setBusy(true); setNotice('');
+    try {
+      window.speechSynthesis?.cancel();
+      const capture = await startVoiceRecording();
+      recorderRef.current = capture;
+      setRecording(true); setBusy(false);
+      recordingTimeoutRef.current = window.setTimeout(() => { void finishRecording(capture); }, 60_000);
+    } catch (error) {
+      setBusy(false);
+      setNotice(error instanceof Error ? error.message : 'Microphone unavailable.');
+    }
   }
 
   async function act(reminderId: string, action: 'done' | 'dismiss' | 'snooze') {

@@ -133,17 +133,21 @@ async function enforceQuota(uid: string, kind: 'transcribe' | 'interpret') {
 export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstances: 2, memory: '512MiB', enforceAppCheck: true }, async request => {
   const uid = requireGoogleUser(request);
   const { audioBase64, mimeType } = request.data ?? {};
+  const mediaType = typeof mimeType === 'string' ? mimeType.split(';')[0].trim().toLowerCase() : '';
   if (typeof audioBase64 !== 'string' || audioBase64.length > 7_000_000 ||
-      typeof mimeType !== 'string' || !['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav'].includes(mimeType)) {
+      typeof mimeType !== 'string' || !['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav'].includes(mediaType)) {
     throw new HttpsError('invalid-argument', 'Unsupported or oversized recording.');
   }
   const bytes = Buffer.from(audioBase64, 'base64');
   if (!bytes.length || bytes.length > 5_000_000) throw new HttpsError('invalid-argument', 'Recording exceeds 5 MB.');
   await enforceQuota(uid, 'transcribe');
-  const extension = mimeType.split('/')[1];
-  const file = await toFile(bytes, `recording.${extension}`, { type: mimeType });
+  const extension = mediaType.split('/')[1];
+  const file = await toFile(bytes, `recording.${extension}`, { type: mediaType });
   const result = await openai().audio.transcriptions.create({ model: 'gpt-transcribe', file });
-  return { transcript: textValue(result.text, 10_000) };
+  const transcript = typeof result.text === 'string' ? result.text.trim() : '';
+  if (!transcript) throw new HttpsError('failed-precondition', 'No speech was detected. Please try again and speak for a few seconds.');
+  if (transcript.length > 4000) throw new HttpsError('invalid-argument', 'Speech was too long. Please try a shorter message.');
+  return { transcript };
 });
 
 export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances: 2, enforceAppCheck: true }, async request => {

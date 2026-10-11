@@ -90,7 +90,7 @@ All mutation functions require the allowlisted UID. Add App Check and per-accoun
 
 - Create a dedicated Firebase project and enable Blaze. Use Google sign-in; after first login, record the Firebase UID as the sole permitted account in function configuration and Firestore rules. Do not use an email comparison as the only access check.
 - Put the OpenAI key in Secret Manager. Set OpenAI project spend alerts and a hard spend limit; set Google Cloud budget alerts, noting that Google Cloud budgets are notifications rather than a universal hard cap.
-- Use one region for Firestore and functions where available, likely `us-central1` for a Chicago-based user; confirm the exact Firestore location before creation because it is difficult to change.
+- Use `us-south1` (Dallas) for Firestore and functions, per the user's location choice. The function region is a deployment setting shared by the browser and backend; keep it matched to Firestore. Database location is difficult to change later.
 - Deploy static assets to Firebase Hosting over HTTPS. Configure one FCM web push VAPID key and service worker. Restrict function origins, set request size limits, and log delivery outcomes without logging raw audio or secrets.
 - Keep conversation text until user deletion, with clear-history and conversation deletion controls. Keep raw audio ephemeral. Expose reminder and conversation export/delete controls.
 - Use minimum instances of zero and a low maximum instance count for this single-user app. Keep one scheduler job at `* * * * *` in UTC to avoid scheduler DST anomalies.

@@ -12,7 +12,7 @@ import { afterDelivery, applyReminderAction } from '../../shared/src/reminderSta
 initializeApp();
 const db = getFirestore();
 const openAiKey = defineSecret('OPENAI_API_KEY');
-const region = 'us-central1';
+const region = process.env.FUNCTIONS_REGION || 'us-south1';
 const ownerUid = process.env.OWNER_UID;
 const model = process.env.OPENAI_MODEL || 'gpt-6.1-sol';
 

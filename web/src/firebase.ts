@@ -16,7 +16,7 @@ const config = {
 export const app = initializeApp(config);
 export const auth = getAuth(app);
 export const database = getFirestore(app);
-export const functions = getFunctions(app, 'us-central1');
+export const functions = getFunctions(app, import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-south1');
 export const allowedUid = import.meta.env.VITE_OWNER_UID as string | undefined;
 
 if (import.meta.env.VITE_RECAPTCHA_SITE_KEY) {

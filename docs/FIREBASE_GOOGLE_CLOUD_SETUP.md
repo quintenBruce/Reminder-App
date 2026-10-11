@@ -14,7 +14,7 @@ Record these values privately as you proceed: `PROJECT_ID`, Firebase Web `apiKey
 
 1. In [Firebase console](https://console.firebase.google.com/), choose **Add project**. Try the preferred project ID `reminder-app`; if Firebase says it is taken, choose an available variant and save that exact value as `PROJECT_ID`. Google Analytics is optional for this single-user app.
 2. Upgrade the project to **Blaze** and attach your existing Google Cloud billing account. Functions and scheduled dispatch require billing. In [Google Cloud Billing > Budgets & alerts](https://console.cloud.google.com/billing/), create a monthly budget, for example $10, with alerts at $2 and $5. A budget alert is not a hard spending cap.
-3. In Firebase **Build > Firestore Database**, create a database in **Native mode**. Choose `us-central1` if available; the functions are configured for that region. Choose the region carefully because changing the database location later requires migration. Start in production mode; the repository rules deny access except to the owner after deployment.
+3. In Firebase **Build > Firestore Database**, create the **default** database in **Native mode** at `us-south1` (Dallas), the region you selected. Keep the Cloud Build `_FUNCTIONS_REGION` substitution at `us-south1` so the callable and scheduled functions are colocated with Firestore. Changing the database location later requires migration. Start in production mode; the repository rules deny access except to the owner after deployment.
 4. In Firebase **Build > Authentication > Sign-in method**, enable **Google** and select a project support email. In **Settings > Authorized domains**, make sure `<PROJECT_ID>.firebaseapp.com` is present.
 5. In **Project settings > Your apps**, register a **Web** app. Copy `apiKey`, `appId`, `messagingSenderId`, and `authDomain`. Use `authDomain=<PROJECT_ID>.firebaseapp.com` and open the PWA at `https://<PROJECT_ID>.firebaseapp.com` for the initial Firefox sign-in. Firebase documents this same-origin arrangement for redirect sign-in in Firefox. Hosting also provides a `.web.app` URL, but it needs extra redirect-domain configuration if used for sign-in.
 6. In **Project settings > Cloud Messaging > Web configuration**, create a Web Push certificate/key pair and copy its **public VAPID key**.
@@ -33,6 +33,7 @@ Firebase may prompt you to enable Cloud Functions, Cloud Build, Artifact Registr
 
    | Substitution | Value |
    | --- | --- |
+   | `_FUNCTIONS_REGION` | `us-south1` (Dallas; already the pipeline default) |
    | `_OWNER_UID` | `BOOTSTRAP` initially; real Firebase UID after first sign-in |
    | `_FIREBASE_API_KEY` | Web app `apiKey` |
    | `_FIREBASE_AUTH_DOMAIN` | `<PROJECT_ID>.firebaseapp.com` |

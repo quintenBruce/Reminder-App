@@ -1,6 +1,7 @@
 # Configure a GitHub push trigger on the repository's default branch.
 # Set the custom substitutions in that trigger; see docs/FIREBASE_GOOGLE_CLOUD_SETUP.md.
 substitutions:
+  _FUNCTIONS_REGION: us-south1
   _OWNER_UID: ''
   _FIREBASE_API_KEY: ''
   _FIREBASE_AUTH_DOMAIN: ''
@@ -13,6 +14,8 @@ steps:
     id: verify-and-build
     entrypoint: bash
     env:
+      - FUNCTIONS_REGION=${_FUNCTIONS_REGION}
+      - VITE_FIREBASE_FUNCTIONS_REGION=${_FUNCTIONS_REGION}
       - OWNER_UID=${_OWNER_UID}
       - VITE_OWNER_UID=${_OWNER_UID}
       - VITE_FIREBASE_API_KEY=${_FIREBASE_API_KEY}

@@ -59,9 +59,9 @@ Build to `web/dist` for Firebase Hosting. Use one TypeScript toolchain and share
 - `UserSettings`: allowlisted UID, preferred IANA time zone, theme mode, notification preview mode, default snooze interval, and last device time zone.
 - `Reminder`: ID, title, optional notes, original wording, normalized `ScheduleRule`, status, next due UTC instant, version, created/updated timestamps.
 - `ScheduleRule`: discriminated variants for one-time, elapsed interval, daily/weekly/monthly/yearly wall-clock patterns, date limits, exclusions, and repeat-until-done nudges. Minimum elapsed interval: five minutes.
-- `Occurrence`: stable ID derived from reminder ID and scheduled instant, scheduled/delivery times, state (`pending`, `sent`, `done`, `dismissed`, `snoozed`, `missed`), attempt count, and action timestamps.
+- `Occurrence`: stable ID derived from reminder ID and scheduled instant, scheduled/delivery times, state (`pending`, `sent`, `done`, `snoozed`, `missed`), attempt count, dismissal timestamp for the current alert, and action timestamps. Dismissal is not a completed state and does not disable later repeat-until-done nudges.
 - `Proposal`: intent (`create`, `edit`, `cancel`, `done`, `dismiss`, `snooze`, `list`, `clarify`), candidate reminder ID, normalized changes, human readback, preview times, expiry, and base reminder version. Confirmation commits a proposal by ID; the browser does not send an unchecked schedule as a confirmed write.
-- `ConversationTurn`: transcript or typed text, assistant response, referenced reminder IDs, and optional proposal ID. Keep a short rolling history. Do not persist raw audio by default.
+- `ConversationTurn`: transcript or typed text, assistant response, referenced reminder IDs, and optional proposal ID. Retain text until the user deletes the conversation or clears history; send only bounded relevant turns to the model. Do not persist raw audio by default.
 - `Device`: FCM token, last seen, permission status. Remove invalid or stale tokens.
 
 Store records below `users/{uid}/...`. Client reads are restricted to the allowlisted UID. Mutations go through functions so schedule invariants, idempotency keys, and occurrence state cannot be bypassed by a browser write.
@@ -74,7 +74,7 @@ Store records below `users/{uid}/...`. Client reads are restricted to the allowl
 4. `listReminders`/Firestore read subscription: authenticated reads for upcoming/history and relevant target candidates. Limit result size and pagination.
 5. `registerDevice` (callable): store or refresh the FCM token after notification permission is granted. Send a setup test push.
 6. `dispatchDue` (scheduled): once per UTC minute, claim due records in batches, send FCM, record outcome, and calculate next occurrences. Retry transient failures within a bounded window. Use stable occurrence IDs and notification tags to reduce visible duplicates.
-7. `applyOccurrenceAction` (callable): Done, Dismiss, or Snooze the current occurrence, then stop any repeat-until-done nudges. Notification action buttons open the authenticated PWA route and apply the action there; no long-lived privileged token is embedded in a push.
+7. `applyOccurrenceAction` (callable): Done completes the occurrence and stops its repeat-until-done nudges. Dismiss hides only the current alert; the next nudge remains scheduled. Snooze delays only the current occurrence's next alert and leaves the recurrence rule intact. Notification action buttons open the authenticated PWA route and apply the action there; no long-lived privileged token is embedded in a push.
 
 All mutation functions require the allowlisted UID. Add App Check and per-account rate limits before deployment. Return structured error codes for expired proposal, ambiguous target, permission denied, offline, and failed push enrollment.
 
@@ -92,6 +92,7 @@ All mutation functions require the allowlisted UID. Add App Check and per-accoun
 - Put the OpenAI key in Secret Manager. Set OpenAI project spend alerts and a hard spend limit; set Google Cloud budget alerts, noting that Google Cloud budgets are notifications rather than a universal hard cap.
 - Use one region for Firestore and functions where available, likely `us-central1` for a Chicago-based user; confirm the exact Firestore location before creation because it is difficult to change.
 - Deploy static assets to Firebase Hosting over HTTPS. Configure one FCM web push VAPID key and service worker. Restrict function origins, set request size limits, and log delivery outcomes without logging raw audio or secrets.
+- Keep conversation text until user deletion, with clear-history and conversation deletion controls. Keep raw audio ephemeral. Expose reminder and conversation export/delete controls.
 - Use minimum instances of zero and a low maximum instance count for this single-user app. Keep one scheduler job at `* * * * *` in UTC to avoid scheduler DST anomalies.
 
 ## Monthly cost estimate in USD
@@ -114,11 +115,11 @@ For Firebase: one minute scheduler produces about 43,200 function invocations in
 3. Implement shared schedule types, recurrence calculator, DST and interval fixtures, Firestore rules, and transaction-based mutations.
 4. Add transcription, structured proposals, conversational target resolution, spoken readback, confirmation, and clarification turns.
 5. Add FCM enrollment, due dispatcher, retry ledger, notification actions, and overdue handling.
-6. Review source and configuration without running the application here. Provide device test steps for the user: install in Firefox for Android, grant permissions, test 5-minute reminder, background/closed browser, restart, offline recovery, recurrence, DST, Done/Snooze, and account denial.
+6. Review source and configuration without running the application here. Provide device test steps for the user: install in Firefox for Android, grant permissions, test 5-minute reminder, background/closed browser, restart, offline recovery, recurrence, DST, Dismiss/Done/Snooze, history deletion, and account denial.
 
 ## Remaining device detail
 
-Before final push behavior is accepted, record the Samsung model, Android version, and Firefox version. Firefox for Android is the initial target. Validate installability, notification permission, push with the PWA in the background, push after its tab is closed, push after Firefox is swiped away, and notification action buttons on that device. The last two cases may differ and are not guaranteed by documentation. If the Firebase Messaging SDK cannot register or deliver there, evaluate standards-based Web Push with the same PWA and backend before changing the product architecture. In-app Done and Snooze remain available regardless of notification button support.
+The user has a recent Samsung phone with current Android and Firefox, but has not supplied exact versions. Record the model and versions at first device validation. Firefox for Android is the initial target. Validate installability, notification permission, push with the PWA in the background, push after its tab is closed, push after Firefox is swiped away, and notification action buttons on that device. The last two cases may differ and are not guaranteed by documentation. If the Firebase Messaging SDK cannot register or deliver there, evaluate standards-based Web Push with the same PWA and backend before changing the product architecture. In-app Dismiss, Done, and Snooze remain available regardless of notification button support.
 
 ## References
 

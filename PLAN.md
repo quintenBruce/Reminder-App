@@ -6,6 +6,7 @@
 - Use a new, dedicated Firebase project on the Blaze plan. Use Firebase Hosting, Google sign-in, Firestore, Cloud Functions, Cloud Scheduler, and Firebase Cloud Messaging (FCM).
 - Allow only one configured Google account. Push-to-talk input and spoken replies are in scope from the first version. Every voice-requested create, edit, cancel, dismiss, and snooze action gets a readback and explicit confirmation before it is committed. Direct UI and notification buttons act on tap.
 - Support conversational references to existing reminders from the first version. Initial minimum repeat interval: five minutes. Notification delivery is best effort, with no promise of exact timing or offline delivery.
+- Dismiss hides the current alert but does not mark it Done or stop a repeat-until-done schedule. Keep text conversation history until the user deletes it.
 - Do not run the application, Gradle, Java, or other app/build commands during development, per the workspace instruction. Verification will use source review and documented device test steps for the user.
 
 ## Architecture
@@ -29,7 +30,7 @@ The LLM interprets a request and proposes actions. It does not calculate future 
 1. **Capture:** Tap and hold or tap to record; show recording state and allow cancellation. Send a short audio clip to an authenticated HTTPS function, with a size and duration limit. Do not retain raw audio after transcription. Provide typed input as a fallback.
 2. **Interpret:** Transcribe audio with OpenAI. Give the model the current time, device time zone, recent conversation, and a bounded list of candidate reminders. Require a structured proposal: create, edit, cancel, dismiss occurrence, snooze occurrence, list, or clarification. The server validates all referenced reminder IDs and fields.
 3. **Review:** Show and speak a concise readback, including title, first due time, recurrence, end condition, and any repeat-until-done behavior. Preview the next five occurrences. Wait for explicit confirmation. Treat a second voice turn such as “yes, but at 10” as a revision of the pending proposal.
-4. **Manage:** Upcoming, overdue, completed, and canceled views. Search and filter. Open a reminder for edit, dismiss current occurrence, snooze, or cancel the series. A recurring reminder's Done/Dismiss action affects one occurrence unless the user explicitly cancels the series. Swiping away an Android notification is not treated as completion.
+4. **Manage:** Upcoming, overdue, completed, and canceled views. Search and filter. Open a reminder for edit, dismiss the current alert, snooze, mark the occurrence Done, or cancel the series. Dismiss only hides the alert; repeat-until-done nudges continue. Done completes the occurrence and stops its nudges. Cancel stops the series. Swiping away an Android notification is not treated as completion.
 5. **Notify:** Ask for browser notification permission during setup, register the PWA's service worker and FCM token, and send a test notification. Show Done and Snooze actions where the installed Firefox version supports them. Tapping a notification opens the relevant reminder. The app always provides the same actions inside its UI.
 6. **Speak back:** Use browser speech synthesis initially, with visible text as the fallback. Add OpenAI speech generation only if device voice quality is inadequate; this avoids an extra API charge for each response.
 
@@ -47,17 +48,17 @@ The LLM interprets a request and proposes actions. It does not calculate future 
 - `users/{uid}/reminders/{id}`: title, notes, original request, normalized rule, status, version, next due instant, timestamps.
 - `users/{uid}/occurrences/{id}`: reminder ID, scheduled instant, state, delivery attempt, dismissal/completion/snooze metadata, and a stable idempotency key.
 - `users/{uid}/devices/{id}`: FCM registration, browser metadata, last seen time, notification permission state.
-- `users/{uid}/conversations/{id}/turns/{id}`: bounded transcript and assistant text needed for conversational references. Provide a clear-history action and retention limit. Do not store raw voice by default.
+- `users/{uid}/conversations/{id}/turns/{id}`: transcript and assistant text, retained until the user deletes it. Send only bounded relevant context to the model. Provide clear-history and individual conversation deletion. Do not store raw voice by default.
 - Use server-side transactions for confirmed mutations and due-occurrence claims. Every operation has a client request ID so retries cannot create duplicate reminders or snoozes. Keep a delivery ledger; collapse duplicate displayed notifications by occurrence ID. If a push fails, retry within a bounded window and leave an overdue item visible in the app.
 - Schedule one UTC Cloud Scheduler job per minute. The job queries due occurrences, claims a batch, sends FCM web push, records outcome, and computes the next occurrence. Never create one Cloud Scheduler job per reminder.
-- Treat snooze as a new due time for the current occurrence. It does not alter the recurrence rule. Completing or dismissing that occurrence stops any repeat-until-done nudges for it.
+- Treat snooze as a new due time for the current occurrence. It does not alter the recurrence rule. Done stops repeat-until-done nudges for that occurrence. Dismiss hides the current alert and leaves the reminder active, so the next scheduled nudge can still arrive.
 
 ## Security and privacy
 
 - Use Google sign-in, then enforce the exact allowlisted Firebase UID in Firestore rules **and** every function. Do not rely on email text alone. Put the UID in configuration after the first sign-in and verify the Google provider.
 - Keep the OpenAI API key in Google Secret Manager and call OpenAI only from functions. Never place it in PWA code or Firestore.
 - Require Firebase Auth on all APIs; enable App Check on callable functions and use request validation, rate limits, audio limits, and a small spend budget. Keep Firestore rules least privilege; only server functions may write occurrence and delivery fields.
-- Minimize stored conversation history and avoid raw audio retention. Provide export and delete for reminder data. Put sensitive reminder text in push payloads only if the user enables lock-screen previews.
+- Keep text conversation history until user deletion; send only the relevant subset to OpenAI. Avoid raw audio retention. Provide export and delete for reminder and conversation data. Full reminder text in push payloads is the user's chosen lock-screen default, with a privacy setting later.
 
 ## Delivery phases
 
@@ -71,7 +72,7 @@ The LLM interprets a request and proposes actions. It does not calculate future 
 
 - A spoken “remind me every weekday at 8:30 to take my medicine” produces the correct next five times and saves only after confirmation.
 - A spoken “move that to 9” and “cancel my medicine reminder” resolve the intended reminder or ask for clarification when multiple reminders match.
-- “Every five minutes until I mark it done” repeats while open and stops after Done; Snooze delays only the current occurrence.
+- “Every five minutes until I mark it done” continues after Dismiss and stops after Done; Snooze delays only the current occurrence.
 - A notification reaches the Samsung phone in a normal connected/background state; Done and Snooze update the app's state. An offline or delayed push leaves an accurate overdue record when the app reconnects.
 - Unauthorized accounts cannot read, mutate, or trigger model requests for the user's reminders.
 
@@ -84,7 +85,7 @@ Firebase is the preferred choice because the user already uses Google Cloud and 
 - Dedicated Firebase/Google Cloud project ID and region.
 - The Google account to allowlist, resolved to Firebase UID during setup.
 - OpenAI API key supplied through Secret Manager, never committed.
-- Samsung phone model, Android version, and Firefox version, to validate push and notification actions on the actual device.
+- The user has a recent Samsung phone with current Android and Firefox. Record exact versions during the first device validation and check push and notification actions there.
 
 ## Sources checked 2026-10-11
 

@@ -24,6 +24,7 @@ if (import.meta.env.VITE_RECAPTCHA_ENTERPRISE_KEY) {
 export const auth = getAuth(app);
 export const database = getFirestore(app);
 export const functions = getFunctions(app, import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-south1');
+let stopForegroundMessages: (() => void) | null = null;
 
 export async function signIn() {
   const provider = new GoogleAuthProvider();
@@ -31,6 +32,8 @@ export async function signIn() {
   await signInWithRedirect(auth, provider);
 }
 export async function signOutUser() {
+  stopForegroundMessages?.();
+  stopForegroundMessages = null;
   const saved = localStorage.getItem('remind-push-registration');
   if (saved && auth.currentUser) {
     let registration: { uid: string; token: string } | null = null;
@@ -53,7 +56,7 @@ export function callable<TInput, TOutput>(name: string) {
   };
 }
 
-export async function enablePush(onForeground: (message: string) => void) {
+export async function enablePush(onForeground: (message: string) => void, test = true) {
   if (!('serviceWorker' in navigator) || !('Notification' in window)) {
     throw new Error('Push is unavailable in this browser. In-app reminders still work.');
   }
@@ -68,9 +71,10 @@ export async function enablePush(onForeground: (message: string) => void) {
     serviceWorkerRegistration: registration,
   });
   if (!token) throw new Error('Firefox did not return a push token.');
-  await callable<{ token: string }, { registered: boolean }>('registerDevice')({ token });
+  await callable<{ token: string; test: boolean }, { registered: boolean }>('registerDevice')({ token, test });
   localStorage.setItem('remind-push-registration', JSON.stringify({ uid: auth.currentUser?.uid, token }));
-  onMessage(messaging, payload => onForeground(payload.data?.title || 'Reminder received'));
+  stopForegroundMessages?.();
+  stopForegroundMessages = onMessage(messaging, payload => onForeground(payload.data?.title || 'Reminder received'));
 }
 
 export function needsPushRegistration(uid: string) {

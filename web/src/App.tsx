@@ -73,6 +73,7 @@ export default function App() {
   const recorderRef = useRef<VoiceRecording | null>(null);
   const recordingStartRef = useRef(0);
   const recordingTimeoutRef = useRef<number | null>(null);
+  const refreshedPushUidRef = useRef<string | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => () => {
@@ -114,6 +115,13 @@ export default function App() {
     }, error => setNotice(error.message));
     return () => { stopReminders(); stopTurns(); stopEvents(); };
   }, [user, conversationId]);
+  useEffect(() => {
+    if (!user || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com') ||
+        !('Notification' in window) || Notification.permission !== 'granted' || refreshedPushUidRef.current === user.uid) return;
+    refreshedPushUidRef.current = user.uid;
+    void enablePush(setNotice, false).catch(error =>
+      setNotice(`Notifications need attention: ${error instanceof Error ? error.message : 'Registration failed.'}`));
+  }, [user]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns.length, proposal]);
   useEffect(() => {
     if (!user || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com')) return;

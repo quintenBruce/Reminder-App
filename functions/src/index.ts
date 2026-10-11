@@ -5,9 +5,11 @@ import { getMessaging } from 'firebase-admin/messaging';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { defineSecret } from 'firebase-functions/params';
+import { info, warn } from 'firebase-functions/logger';
 import OpenAI, { toFile } from 'openai';
 import { nextOccurrence, previewOccurrences, validateNudge, validateRule, type ReminderRecord, type ScheduleRule } from '../../shared/src/schedule';
 import { afterDelivery, applyReminderAction } from '../../shared/src/reminderState';
+import { deliveryDiagnostic } from './deliveryDiagnostics';
 
 initializeApp();
 const db = getFirestore();
@@ -300,7 +302,15 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true }, async r
 export const registerDevice = onCall({ region, enforceAppCheck: true }, async request => {
   const uid = requireGoogleUser(request);
   const token = textValue(request.data?.token, 4096);
+  const test = request.data?.test === true;
   const id = createHash('sha256').update(token).digest('hex');
+  try {
+    await getMessaging().send({ token, data: { title: 'Remind is ready', body: 'Notifications are connected.', reminderId: 'test', url: '/' } }, !test);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'unknown';
+    warn('Push registration test was rejected', { uid, code });
+    throw new HttpsError('failed-precondition', `Push registration failed (${code}). Please try again.`);
+  }
   const ownerRef = db.collection('deviceTokens').doc(id);
   await db.runTransaction(async tx => {
     const previous = await tx.get(ownerRef);
@@ -311,7 +321,7 @@ export const registerDevice = onCall({ region, enforceAppCheck: true }, async re
     tx.set(ownerRef, { uid, updatedAt: Date.now() });
     tx.set(root(uid).collection('devices').doc(id), { token, updatedAt: Date.now() });
   });
-  await getMessaging().send({ token, data: { title: 'Remind is ready', body: 'Notifications are connected.', reminderId: 'test', url: '/' } });
+  info('Push device registered', { uid, test });
   return { registered: true };
 });
 
@@ -360,19 +370,31 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
     if (!claimed) continue;
     const scheduledAt = claimed.currentScheduledAt ?? claimed.nextDueAt!;
     const devices = await root(uid).collection('devices').get();
-    const tokens = devices.docs.map(d => d.get('token') as string).filter(Boolean);
-    let delivered = false;
-    if (tokens.length) {
-      const results = await getMessaging().sendEachForMulticast({
-        tokens: tokens.slice(0, 500),
-        data: { title: claimed.title, body: claimed.notes || claimed.title, reminderId: claimed.id,
-          url: `/?reminder=${encodeURIComponent(claimed.id)}`, occurrenceId: `${claimed.id}_${scheduledAt}` },
-        webpush: { headers: { TTL: '3600' } },
-      });
-      delivered = results.successCount > 0;
-      const invalid = results.responses.map((r, i) => !r.success && /registration-token-not-registered|invalid-registration-token/.test(r.error?.code ?? '') ? devices.docs[i]?.ref : null).filter(Boolean);
-      await Promise.all(invalid.map(ref => ref!.delete()));
+    const targets = devices.docs.filter(device => typeof device.get('token') === 'string' && device.get('token'));
+    const selected = targets.slice(0, 500);
+    let diagnostic = deliveryDiagnostic(selected.length);
+    if (selected.length) {
+      try {
+        const results = await getMessaging().sendEachForMulticast({
+          tokens: selected.map(device => device.get('token') as string),
+          data: { title: claimed.title, body: claimed.notes || claimed.title, reminderId: claimed.id,
+            url: `/?reminder=${encodeURIComponent(claimed.id)}`, occurrenceId: `${claimed.id}_${scheduledAt}` },
+          webpush: { headers: { TTL: '3600' } },
+        });
+        diagnostic = deliveryDiagnostic(selected.length, results.responses);
+        const invalid = results.responses.flatMap((response, i) =>
+          !response.success && /registration-token-not-registered|invalid-registration-token/.test(response.error?.code ?? '')
+            ? [selected[i].ref] : []);
+        const cleanup = await Promise.allSettled(invalid.map(ref => ref.delete()));
+        if (cleanup.some(result => result.status === 'rejected')) {
+          warn('Could not remove an invalid push token', { uid, reminderId: claimed.id });
+        }
+      } catch (error) {
+        const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'unknown';
+        diagnostic = deliveryDiagnostic(selected.length, undefined, code);
+      }
     }
+    const delivered = diagnostic.acceptedCount > 0;
     const finishAt = Date.now();
     await db.runTransaction(async tx => {
       const snap = await tx.get(doc.ref);
@@ -382,8 +404,11 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
       tx.update(doc.ref, transition.update);
       tx.set(root(uid).collection('occurrences').doc(`${r.id}_${scheduledAt}`), {
         reminderId: r.id, scheduledAt, lastAttemptAt: finishAt,
-        status: transition.occurrenceStatus, attempts: FieldValue.increment(1),
+        status: transition.occurrenceStatus, attempts: FieldValue.increment(1), ...diagnostic,
       }, { merge: true });
     });
+    const details = { uid, reminderId: claimed.id, scheduledAt, ...diagnostic };
+    if (delivered) info('Reminder push accepted', details);
+    else warn('Reminder push not accepted', details);
   }
 });

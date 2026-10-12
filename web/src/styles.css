@@ -115,6 +115,8 @@ h1, h2, .brand, .eyebrow { font-family: Manrope, system-ui, sans-serif; }
 .history-item strong { font-size: 12px; text-transform: capitalize; }
 .history-item span, .history-item time { font-size: 11px; color: var(--muted); }
 .history-item time { white-space: nowrap; }
+.history-actions { display: flex; gap: 7px; margin-top: 7px; }
+.history-actions button { border: 0; border-radius: 9px; background: var(--surface-soft); color: var(--text); padding: 7px 9px; font-size: 11px; font-weight: 700; }
 .settings-page { display: flex; flex-direction: column; gap: 13px; }
 .setting-card { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 19px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
 .setting-card strong { font-size: 14px; }

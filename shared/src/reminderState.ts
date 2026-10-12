@@ -2,6 +2,10 @@ import { nextOccurrence, type ReminderRecord } from './schedule';
 
 export type OccurrenceAction = 'done' | 'dismiss' | 'snooze';
 
+export function reminderSection(reminder: ReminderRecord): 'upcoming' | 'history' {
+  return reminder.status === 'active' && reminder.nextDueAt != null ? 'upcoming' : 'history';
+}
+
 export function currentAlertId(reminder: ReminderRecord, now: number): string | undefined {
   const scheduledAt = reminder.currentScheduledAt ??
     (reminder.lastSentAt != null && reminder.lastScheduledAt != null &&

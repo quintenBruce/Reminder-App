@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nextOccurrence, previewOccurrences, type ReminderRecord } from '../src/schedule';
-import { afterDelivery, applyReminderAction, currentAlertId } from '../src/reminderState';
+import { afterDelivery, applyReminderAction, currentAlertId, reminderSection } from '../src/reminderState';
 
 const ms = (value: string) => Date.parse(value);
 const iso = (value: number | null) => value === null ? null : new Date(value).toISOString();
@@ -99,5 +99,15 @@ describe('reminder actions and delivery', () => {
     expect(result.update.nextDueAt).toBe(due + 5 * 60_000);
     expect(result.update.currentScheduledAt).toBe(due);
     expect(result.occurrenceStatus).toBe('retry');
+  });
+
+  it('moves a sent final occurrence out of Upcoming without breaking its actions', () => {
+    const due = ms('2026-10-11T14:00:00-05:00');
+    const sent = afterDelivery(reminder(), due, due + 1000, true);
+    expect(sent.update.nextDueAt).toBeNull();
+    const delivered = reminder(sent.update);
+    expect(reminderSection(delivered)).toBe('history');
+    expect(applyReminderAction(delivered, 'done', due + 2000, null, `r1_${due}`)).toMatchObject({ status: 'completed' });
+    expect(applyReminderAction(delivered, 'snooze', due + 2000, 10, `r1_${due}`)).toMatchObject({ nextDueAt: due + 602000 });
   });
 });

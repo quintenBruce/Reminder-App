@@ -3,7 +3,7 @@ import { onAuthStateChanged, getRedirectResult, type User } from 'firebase/auth'
 import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Bell, Check, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
 import type { ReminderRecord } from '../../shared/src/schedule';
-import { currentAlertId } from '../../shared/src/reminderState';
+import { currentAlertId, reminderSection } from '../../shared/src/reminderState';
 import { auth, callable, closeReminderNotifications, database, enablePush, needsPushRegistration, signIn, signOutUser } from './firebase';
 import { microphoneErrorMessage, startVoiceRecording, withTimeout, type VoiceRecording } from './voice';
 import { playHaptic } from './haptics';
@@ -302,7 +302,8 @@ export default function App() {
     finally { setBusy(false); }
   }
 
-  const active = reminders.filter(r => r.status === 'active').sort((a, b) => (a.nextDueAt ?? Infinity) - (b.nextDueAt ?? Infinity));
+  const active = reminders.filter(r => reminderSection(r) === 'upcoming').sort((a, b) => (a.nextDueAt ?? Infinity) - (b.nextDueAt ?? Infinity));
+  const past = reminders.filter(r => reminderSection(r) === 'history');
   const visible = active.filter(r => r.title.toLowerCase().includes(search.toLowerCase()));
   const authorized = !!user && user.emailVerified && user.providerData.some(provider => provider.providerId === 'google.com');
 
@@ -344,8 +345,8 @@ export default function App() {
         <div className="reminder-list">{visible.length ? visible.map(r => <article className="reminder-card" key={r.id}><div className="reminder-icon"><Bell size={19} /></div><div className="reminder-body"><h2>{r.title}</h2><p>{r.currentScheduledAt && r.currentScheduledAt < Date.now() ? `Overdue since ${dateLabel(r.currentScheduledAt)} · Next attempt ${dateLabel(r.nextDueAt)}` : dateLabel(r.nextDueAt)}</p>{r.repeatUntilDoneMinutes && <span className="chip">Repeats every {r.repeatUntilDoneMinutes} min until Done</span>}
           <div className="card-actions"><button disabled={busy} onClick={() => act(r, 'done')}><Check size={16} /> Done</button><button disabled={busy} onClick={() => act(r, 'snooze')}><Clock3 size={16} /> Snooze</button>{r.lastSentAt != null && Date.now() >= r.lastSentAt && Date.now() - r.lastSentAt < 24 * 60 * 60_000 && <button disabled={busy} onClick={() => act(r, 'dismiss')}><X size={16} /> Dismiss alert</button>}<button onClick={() => { setDraft(`Change my reminder “${r.title}” to `); setView('home'); }}>Edit</button></div>{r.repeatUntilDoneMinutes && <p className="action-help">Dismiss closes this alert; Done stops its repeat nudges.</p>}</div></article>) : <div className="empty-state">No reminders found. Tap the microphone to make one.</div>}</div>
       </section>}
-      {view === 'history' && <section className="page"><div className="page-heading"><div className="eyebrow">RECENT ACTIVITY</div><h1>History</h1><p>Your completed and canceled reminders</p></div>
-        <div className="history-list">{reminders.filter(r => r.status !== 'active').length ? reminders.filter(r => r.status !== 'active').map(r => <div className="history-item" key={r.id}><div className="history-dot" /><div><strong>{r.status}</strong><span>{r.title}</span></div><time>{dateLabel(r.updatedAt)}</time></div>) : <div className="empty-state">No completed or canceled reminders yet.</div>}</div>
+      {view === 'history' && <section className="page"><div className="page-heading"><div className="eyebrow">RECENT ACTIVITY</div><h1>History</h1><p>Delivered, completed, and canceled reminders</p></div>
+        <div className="history-list">{past.length ? past.map(r => <div className="history-item" key={r.id}><div className="history-dot" /><div><strong>{r.status === 'active' ? r.lastSentAt ? 'Alert sent' : 'Needs scheduling' : r.status}</strong><span>{r.title}</span>{r.status === 'active' && <div className="history-actions"><button disabled={busy} onClick={() => act(r, 'done')}>Done</button><button disabled={busy} onClick={() => act(r, 'snooze')}>Snooze 10 min</button></div>}</div><time>{dateLabel(r.status === 'active' ? r.lastSentAt ?? r.updatedAt : r.updatedAt)}</time></div>) : <div className="empty-state">No past reminders yet.</div>}</div>
         <h2 className="activity-heading">Recent actions</h2><div className="history-list">{events.length ? events.map(e => <div className="history-item" key={e.id}><div className="history-dot" /><div><strong>{e.action}</strong><span>{reminders.find(r => r.id === e.reminderId)?.title || 'Reminder'}</span></div><time>{dateLabel(e.at)}</time></div>) : <div className="empty-state">Nothing here yet.</div>}</div></section>}
       {view === 'settings' && <section className="page settings-page"><div className="page-heading"><div className="eyebrow">MAKE IT YOURS</div><h1>Settings</h1></div>
         <div className="setting-card"><div><strong>Appearance</strong><p>Follow your phone or choose a look</p></div><div className="segmented">{(['system', 'light', 'dark'] as Theme[]).map(mode => <button className={theme === mode ? 'selected' : ''} key={mode} onClick={() => setTheme(mode)}>{mode === 'light' ? <Sun size={15} /> : mode === 'dark' ? <Moon size={15} /> : null}{mode}</button>)}</div></div>

@@ -30,4 +30,6 @@ Delivery is best effort. Chrome is not required. A notification action opens the
 
 **Dismiss alert** closes a currently displayed notification and leaves future nudges scheduled. **Done** finishes the current occurrence and stops its repeat-until-Done nudges; recurring reminders keep their next regular occurrence. Upcoming only offers Dismiss alert for a recently sent or active alert.
 
+Upcoming lists only reminders with a scheduled next alert. A one-time reminder whose alert was sent and has no next time appears in History as **Alert sent**, where Done or Snooze remain available. This also applies to a recurrence after its final scheduled alert.
+
 The microphone and reminder action buttons request short haptic feedback when the browser permits it. No sound is played by this feature. Firefox for Android currently has an [open `navigator.vibrate()` issue](https://bugzilla.mozilla.org/show_bug.cgi?id=1653318), so button haptics may be unavailable on that browser.

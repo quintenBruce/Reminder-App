@@ -8,9 +8,10 @@ import { defineSecret } from 'firebase-functions/params';
 import { info, warn } from 'firebase-functions/logger';
 import OpenAI, { toFile } from 'openai';
 import { nextOccurrence, previewOccurrences, validateNudge, validateRule, type ReminderRecord, type ScheduleRule } from '../../shared/src/schedule';
-import { afterDelivery, applyReminderAction } from '../../shared/src/reminderState';
+import { afterDelivery, applyReminderAction, canPersistDelivery, hasCurrentAlert } from '../../shared/src/reminderState';
 import { deliveryDiagnostic } from './deliveryDiagnostics';
 import { errorFields, observe } from './observability';
+import { purgeRelatedRecords, type RelatedRecordKind } from './reminderDeletion';
 
 initializeApp();
 const db = getFirestore();
@@ -18,7 +19,7 @@ const openAiKey = defineSecret('OPENAI_API_KEY');
 const region = process.env.FUNCTIONS_REGION || 'us-south1';
 const model = process.env.OPENAI_MODEL || 'gpt-6.1-sol';
 
-type Action = 'create' | 'edit' | 'cancel' | 'done' | 'dismiss' | 'snooze' | 'list' | 'clarify';
+type Action = 'create' | 'edit' | 'cancel' | 'delete' | 'done' | 'dismiss' | 'snooze' | 'list' | 'clarify';
 type ModelDecision = {
   action: Action; targetId: string | null; title: string | null; notes: string | null;
   kind: ScheduleRule['kind'] | null; at: string | null; startAt: string | null;
@@ -39,7 +40,7 @@ type Proposal = {
 const decisionSchema = {
   type: 'object', additionalProperties: false,
   properties: {
-    action: { type: 'string', enum: ['create', 'edit', 'cancel', 'done', 'dismiss', 'snooze', 'list', 'clarify'] },
+    action: { type: 'string', enum: ['create', 'edit', 'cancel', 'delete', 'done', 'snooze', 'list', 'clarify'] },
     targetId: { type: ['string', 'null'] }, title: { type: ['string', 'null'] }, notes: { type: ['string', 'null'] },
     kind: { type: ['string', 'null'], enum: ['once', 'interval', 'daily', 'weekly', 'monthly', 'yearly', null] },
     at: { type: ['string', 'null'] }, startAt: { type: ['string', 'null'] },
@@ -167,13 +168,15 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   try { Intl.DateTimeFormat('en', { timeZone: zone }); } catch { throw new HttpsError('invalid-argument', 'Invalid time zone.'); }
   const remindersRef = root(uid).collection('reminders');
   const [candidatesSnap, turnsSnap, pendingSnap] = await Promise.all([
-    remindersRef.where('status', '==', 'active').limit(40).get(),
+    Promise.all([remindersRef.where('status', '==', 'active').limit(40).get(),
+      remindersRef.where('status', 'in', ['completed', 'canceled']).limit(20).get()]),
     root(uid).collection('conversations').doc(conversationId).collection('turns').orderBy('createdAt', 'desc').limit(8).get(),
     pendingProposalId ? root(uid).collection('proposals').doc(pendingProposalId).get() : Promise.resolve(null),
   ]);
   const pending = pendingSnap?.exists && pendingSnap.get('conversationId') === conversationId && pendingSnap.get('expiresAt') > Date.now()
     ? pendingSnap.data() as Proposal : null;
-  const candidates = candidatesSnap.docs.map(doc => record(doc.data(), doc.id));
+  const candidates = candidatesSnap.flatMap(snapshot => snapshot.docs.map(doc => record(doc.data(), doc.id)))
+    .filter(r => !r.deletionRequestedAt);
   const history = turnsSnap.docs.reverse().map(doc => ({ user: doc.get('user'), assistant: doc.get('assistant') }));
   trace.stage('context.loaded', { conversationId, candidateCount: candidates.length, historyCount: history.length, hasPendingProposal: !!pending });
   await enforceQuota(uid, 'interpret');
@@ -183,16 +186,22 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     model, store: false, reasoning: { effort: 'low' },
     max_output_tokens: 2000,
     text: { format: { type: 'json_schema', name: 'reminder_decision', strict: true, schema: decisionSchema } },
-    instructions: `You interpret personal reminder requests. Current instant: ${new Date().toISOString()}. Device IANA zone: ${zone}. Resolve references only to candidate IDs. If ambiguous or a time is missing, clarify. For create/edit return a complete schedule using an ISO offset instant in at/startAt. For a wall-clock recurrence choose an IANA timeZone and local hour/minute. Weekly days use 1=Monday through 7=Sunday. A request like "every 5 minutes until done" is a one-time occurrence with repeatUntilDoneMinutes=5, not a perpetual interval rule. For an edit, provide the entire replacement schedule when changing timing; otherwise kind=null preserves it. Use clearRepeatUntilDone=true only if the user removes those nudges. If the user revises a pending creation, return action=create with full revised fields. Keep responses short. Never invent a target ID.`,
+    instructions: `You interpret personal reminder requests. Current instant: ${new Date().toISOString()}. Device IANA zone: ${zone}. Resolve references only to candidate IDs. If ambiguous or a time is missing, clarify. For create/edit return a complete schedule using an ISO offset instant in at/startAt. For a wall-clock recurrence choose an IANA timeZone and local hour/minute. Weekly days use 1=Monday through 7=Sunday. A request like "every 5 minutes until done" is a one-time occurrence with repeatUntilDoneMinutes=5, not a perpetual interval rule. For an edit, provide the entire replacement schedule when changing timing; otherwise kind=null preserves it. Use clearRepeatUntilDone=true only if the user removes those nudges. If the user revises a pending creation, return action=create with full revised fields. Use delete for delete/remove/erase requests: it permanently erases the reminder and its related records after confirmation. Cancel only stops scheduling and retains history. Never offer dismiss. Keep responses short. Never invent a target ID.`,
     input: JSON.stringify({ utterance, history, pendingProposal: pending ? { action: pending.action, targetId: pending.targetId, title: pending.title, notes: pending.notes, rule: pending.rule, repeatUntilDoneMinutes: pending.repeatUntilDoneMinutes, snoozeMinutes: pending.snoozeMinutes } : null,
-      candidates: candidates.map(r => ({ id: r.id, title: r.title, rule: r.rule, repeatUntilDoneMinutes: r.repeatUntilDoneMinutes, nextDueAt: r.nextDueAt })) }),
+      candidates: candidates.map(r => ({ id: r.id, title: r.title, status: r.status, rule: r.rule, repeatUntilDoneMinutes: r.repeatUntilDoneMinutes, nextDueAt: r.nextDueAt })) }),
   });
   trace.stage('interpretation.received', { aiDurationMs: Date.now() - aiStartedAt, outputLength: response.output_text?.length ?? 0 });
   if (!response.output_text) throw new HttpsError('internal', 'No interpretation returned.');
   const d = JSON.parse(response.output_text) as ModelDecision;
   const candidate = candidates.find(r => r.id === d.targetId);
-  if (['edit', 'cancel', 'done', 'dismiss', 'snooze'].includes(d.action) && !candidate) {
+  if (['edit', 'cancel', 'delete', 'done', 'snooze'].includes(d.action) && !candidate) {
     d.action = 'clarify'; d.message = 'Which reminder do you mean?';
+  }
+  if (candidate?.status !== 'active' && ['edit', 'cancel', 'done', 'snooze'].includes(d.action)) {
+    d.action = 'clarify'; d.message = 'That reminder is no longer active. You can delete it from History.';
+  }
+  if (candidate && ['done', 'snooze'].includes(d.action) && !hasCurrentAlert(candidate)) {
+    d.action = 'clarify'; d.message = 'That reminder has no sent alert to act on yet.';
   }
   const now = Date.now();
   const turns = root(uid).collection('conversations').doc(conversationId).collection('turns');
@@ -218,7 +227,8 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   const notes = d.notes === null ? candidate?.notes ?? pending?.notes ?? '' : stringValue(d.notes, 1000);
   const readback = d.action === 'create' || d.action === 'edit'
     ? `${d.action === 'create' ? 'Create' : 'Change'} “${title}”${notes ? ` (${notes})` : ''}: ${summarize(rule!, preview, zone)}${nudgeMinutes ? `; repeat every ${nudgeMinutes} minutes until Done` : ''}. Confirm?`
-    : `${d.action === 'snooze' ? `Snooze “${candidate!.title}” for ${d.snoozeMinutes} minutes` : `${d.action[0].toUpperCase()}${d.action.slice(1)} “${candidate!.title}”`}. Confirm?`;
+    : d.action === 'delete' ? `Permanently delete “${candidate!.title}” and its reminder records? This cannot be undone. Confirm?`
+      : `${d.action === 'snooze' ? `Snooze “${candidate!.title}” for ${d.snoozeMinutes} minutes` : `${d.action[0].toUpperCase()}${d.action.slice(1)} “${candidate!.title}”`}. Confirm?`;
   const proposal: Proposal = {
     id: randomUUID(), conversationId, action: d.action, targetId: candidate?.id ?? null, baseVersion: candidate?.version ?? null,
     originalWording: utterance,
@@ -248,6 +258,14 @@ async function applyAction(uid: string, reminderId: string, action: 'done' | 'di
     try { update = applyReminderAction(r, action, now, snoozeMinutes, occurrenceId); }
     catch (error) { throw new HttpsError('failed-precondition', error instanceof Error ? error.message : 'Invalid occurrence action.'); }
     tx.update(ref, action === 'done' ? { ...update, dismissedAt: FieldValue.delete() } : update);
+    const alertAt = occurrenceId?.startsWith(`${reminderId}_`)
+      ? Number(occurrenceId.slice(reminderId.length + 1)) : r.lastScheduledAt;
+    if (alertAt != null && Number.isFinite(alertAt) && r.lastSentAt != null && r.lastScheduledAt === alertAt) {
+      tx.set(root(uid).collection('occurrences').doc(`${reminderId}_${alertAt}`),
+        action === 'done' ? { reminderId, acknowledgedAt: now, acknowledgment: 'done' }
+          : action === 'snooze' ? { reminderId, snoozedUntil: update.nextDueAt } : { reminderId, dismissedAt: now },
+        { merge: true });
+    }
     const result = { reminderId, action, at: now };
     tx.create(idempotency, { result, createdAt: now });
     const eventId = randomUUID();
@@ -267,7 +285,75 @@ export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, r
   return result;
 }));
 
-export const confirmProposal = onCall({ region, enforceAppCheck: true }, request => observe('confirmProposal', request.auth?.uid, async trace => {
+async function deleteReminderData(uid: string, reminderId: string, expectedVersion?: number | null) {
+  const owner = root(uid);
+  const reminder = owner.collection('reminders').doc(reminderId);
+  const stoppedAt = Date.now();
+  await db.runTransaction(async tx => {
+    const snap = await tx.get(reminder);
+    if (!snap.exists) return;
+    const current = record(snap.data()!, reminderId);
+    if (current.deletionRequestedAt) return;
+    if (expectedVersion != null && current.version !== expectedVersion) {
+      throw new HttpsError('failed-precondition', 'Reminder changed. Please ask again.');
+    }
+    tx.update(reminder, { status: 'canceled', deletionRequestedAt: stoppedAt,
+      nextDueAt: null, currentScheduledAt: null, leaseUntil: 0,
+      version: current.version + 1, updatedAt: stoppedAt });
+  });
+  const removed = await purgeRelatedRecords(uid, reminderId,
+    async (accountId, id, kind: RelatedRecordKind, limit) => {
+      const scoped = root(accountId);
+      const query = kind === 'occurrences' ? scoped.collection('occurrences').where('reminderId', '==', id)
+        : kind === 'actions' ? scoped.collection('actions').where('result.reminderId', '==', id)
+          : kind === 'events' ? scoped.collection('events').where('reminderId', '==', id)
+            : kind === 'proposalsByTarget' ? scoped.collection('proposals').where('targetId', '==', id)
+              : scoped.collection('proposals').where('committedResult.reminderId', '==', id);
+      return (await query.limit(limit).get()).docs.map(doc => doc.ref);
+    },
+    async refs => {
+      const batch = db.batch();
+      refs.forEach(ref => batch.delete(ref));
+      await batch.commit();
+    });
+  await reminder.delete();
+  return { reminderId, deleted: true, removed };
+}
+
+export const deleteReminder = onCall({ region, enforceAppCheck: true, timeoutSeconds: 540 }, request => observe('deleteReminder', request.auth?.uid, async trace => {
+  const uid = requireGoogleUser(request);
+  const reminderId = textValue(request.data?.reminderId, 100);
+  const expectedVersion = request.data?.expectedVersion;
+  if (expectedVersion != null && (!Number.isInteger(expectedVersion) || expectedVersion < 0)) {
+    throw new HttpsError('invalid-argument', 'Invalid reminder version.');
+  }
+  const proposalId = stringValue(request.data?.proposalId, 100);
+  if (proposalId) {
+    const proposal = await root(uid).collection('proposals').doc(proposalId).get();
+    if (proposal.exists) {
+      const p = proposal.data() as Proposal;
+      if (p.action !== 'delete' || p.targetId !== reminderId || p.baseVersion !== expectedVersion) {
+        throw new HttpsError('failed-precondition', 'Deletion proposal changed or expired. Please ask again.');
+      }
+      if (p.expiresAt < Date.now()) {
+        const current = await root(uid).collection('reminders').doc(reminderId).get();
+        if (current.exists && !current.get('deletionRequestedAt')) {
+          throw new HttpsError('failed-precondition', 'Deletion proposal expired. Please ask again.');
+        }
+      }
+    } else {
+      const current = await root(uid).collection('reminders').doc(reminderId).get();
+      if (current.exists && !current.get('deletionRequestedAt')) {
+        throw new HttpsError('not-found', 'Deletion proposal not found. Please ask again.');
+      }
+    }
+  }
+  const result = await deleteReminderData(uid, reminderId, expectedVersion);
+  trace.stage('reminder.deleted', { reminderId, relatedRecordsRemoved: result.removed });
+  return result;
+}));
+
+export const confirmProposal = onCall({ region, enforceAppCheck: true, timeoutSeconds: 540 }, request => observe('confirmProposal', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const proposalId = textValue(request.data?.proposalId, 100);
   const ref = root(uid).collection('proposals').doc(proposalId);
@@ -278,6 +364,18 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true }, request
   if (p.committedResult) {
     trace.stage('proposal.alreadyCommitted', { proposalId });
     return p.committedResult;
+  }
+  if (p.action === 'delete') {
+    if (!p.targetId) throw new HttpsError('invalid-argument', 'Missing reminder.');
+    if (Date.now() > p.expiresAt) {
+      const current = await root(uid).collection('reminders').doc(p.targetId).get();
+      if (current.exists && !current.get('deletionRequestedAt')) {
+        throw new HttpsError('failed-precondition', 'Proposal expired. Please ask again.');
+      }
+    }
+    const result = await deleteReminderData(uid, p.targetId, p.baseVersion);
+    trace.stage('proposal.deletedReminder', { proposalId, reminderId: p.targetId, relatedRecordsRemoved: result.removed });
+    return result;
   }
   if (Date.now() > p.expiresAt) throw new HttpsError('failed-precondition', 'Proposal expired. Please ask again.');
   if (['done', 'dismiss', 'snooze'].includes(p.action)) {
@@ -443,8 +541,8 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
     const finishAt = Date.now();
     const persisted = await db.runTransaction(async tx => {
       const snap = await tx.get(doc.ref);
-      if (!snap.exists || snap.get('leaseUntil') !== now + 90_000 || snap.get('version') !== claimed.version) return false;
-      const r = record(snap.data()!, snap.id);
+      const r = snap.exists ? record(snap.data()!, snap.id) : null;
+      if (!canPersistDelivery(r, claimed.version, now + 90_000)) return false;
       const transition = afterDelivery(r, scheduledAt, finishAt, delivered);
       tx.update(doc.ref, transition.update);
       tx.set(root(uid).collection('occurrences').doc(`${r.id}_${scheduledAt}`), {

@@ -3,27 +3,28 @@ import { onAuthStateChanged, getRedirectResult, type User } from 'firebase/auth'
 import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Bell, Check, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
 import type { ReminderRecord } from '../../shared/src/schedule';
-import { currentAlertId, reminderSection } from '../../shared/src/reminderState';
+import { reminderGroup, reminderSection } from '../../shared/src/reminderState';
 import { auth, callable, closeReminderNotifications, database, enablePush, needsPushRegistration, signIn, signOutUser } from './firebase';
 import { microphoneErrorMessage, startVoiceRecording, withTimeout, type VoiceRecording } from './voice';
 import { playHaptic } from './haptics';
 
 type View = 'home' | 'upcoming' | 'history' | 'settings';
 type Theme = 'system' | 'light' | 'dark';
-type Proposal = { id: string; readback: string; preview: number[]; action: string };
+type Proposal = { id: string; readback: string; preview: number[]; action: string; targetId: string | null; baseVersion: number | null };
 type Turn = { id: string; user: string; assistant: string; createdAt: number };
 type Event = { id: string; reminderId: string; action: string; at: number };
 
 const call = {
   transcribe: callable<{ audioBase64: string; mimeType: string }, { transcript: string }>('transcribeAudio'),
   propose: callable<{ text: string; conversationId: string; timeZone: string; pendingProposalId?: string }, { conversationId: string; reply: string; proposal: Proposal | null }>('proposeAction'),
-  confirm: callable<{ proposalId: string }, { reminderId: string; action: string }>('confirmProposal'),
+  confirm: callable<{ proposalId: string }, { reminderId: string; action: string }>('confirmProposal', 540_000),
   act: callable<{ reminderId: string; action: string; snoozeMinutes?: number; requestId: string; occurrenceId?: string }, unknown>('applyOccurrenceAction'),
+  deleteReminder: callable<{ reminderId: string; expectedVersion: number; proposalId?: string }, { deleted: boolean }>('deleteReminder', 540_000),
   deleteConversation: callable<{ conversationId: string }, { deleted: boolean }>('deleteConversation'),
 };
 
 function dateLabel(ms: number | null | undefined) {
-  if (ms == null) return 'No upcoming time';
+  if (ms == null) return '—';
   return new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(ms);
 }
 
@@ -63,6 +64,7 @@ export default function App() {
   const [reminders, setReminders] = useState<ReminderRecord[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ReminderRecord | null>(null);
   const [draft, setDraft] = useState('');
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
@@ -207,22 +209,27 @@ export default function App() {
   async function confirm() {
     if (!proposal) return;
     // Begin on the confirmation tap so the browser can show its permission prompt.
-    const pushNeeded = !!user && needsPushRegistration(user.uid);
+    const pushNeeded = proposal.action !== 'delete' && !!user && needsPushRegistration(user.uid);
     const pushSetup = pushNeeded
       ? enablePush(setNotice).then(() => '').catch(error => error instanceof Error ? error.message : 'Could not enable notifications.')
       : Promise.resolve('');
     setBusy(true);
-    setWorkingLabel('Saving reminder…');
+    setWorkingLabel(proposal.action === 'delete' ? 'Deleting reminder…' : 'Saving reminder…');
     try {
-      await call.confirm({ proposalId: proposal.id });
+      const deleting = proposal.action === 'delete';
+      if (deleting) {
+        if (!proposal.targetId || proposal.baseVersion == null) throw new Error('Deletion proposal is incomplete. Please ask again.');
+        await call.deleteReminder({ reminderId: proposal.targetId, expectedVersion: proposal.baseVersion, proposalId: proposal.id });
+      } else await call.confirm({ proposalId: proposal.id });
+      if (deleting && proposal.targetId) await closeReminderNotifications(proposal.targetId).catch(() => undefined);
       playHaptic('success');
-      setNotice(pushNeeded ? 'Saved. Allow Firefox notifications to get alerts.'
+      setNotice(deleting ? 'Reminder deleted.' : pushNeeded ? 'Saved. Allow Firefox notifications to get alerts.'
         : 'Notification' in window && Notification.permission === 'denied'
           ? 'Saved, but Firefox notifications are blocked. Allow them in browser settings.' : 'Saved.');
       setProposal(null);
       if (pushNeeded) void pushSetup.then(pushError => setNotice(pushError
         ? `Saved, but notifications are off: ${pushError}` : 'Saved. Notifications enabled.'));
-      if (voiceReply) speak('Saved.');
+      if (voiceReply) speak(deleting ? 'Reminder deleted.' : 'Saved.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not save.');
     }
@@ -278,16 +285,31 @@ export default function App() {
     }
   }
 
-  async function act(reminder: ReminderRecord, action: 'done' | 'dismiss' | 'snooze') {
+  async function act(reminder: ReminderRecord, action: 'done' | 'snooze', occurrenceId: string) {
     playHaptic('tap');
     setBusy(true);
     try {
       await call.act({ reminderId: reminder.id, action, snoozeMinutes: action === 'snooze' ? 10 : undefined,
-        requestId: crypto.randomUUID(), occurrenceId: currentAlertId(reminder, Date.now()) });
+        requestId: crypto.randomUUID(), occurrenceId });
       playHaptic('success');
       await closeReminderNotifications(reminder.id).catch(() => undefined);
-      setNotice(action === 'snooze' ? 'Snoozed 10 minutes.' : action === 'dismiss' ? 'Alert hidden. Future reminders remain scheduled.' : 'Marked done.');
+      setNotice(action === 'snooze' ? 'Snoozed 10 minutes.' : 'Marked done.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Action failed.'); }
+    finally { setBusy(false); }
+  }
+
+  async function removeReminder() {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setBusy(true);
+    setWorkingLabel('Deleting reminder…');
+    try {
+      await call.deleteReminder({ reminderId: target.id, expectedVersion: target.version });
+      await closeReminderNotifications(target.id).catch(() => undefined);
+      playHaptic('success');
+      setDeleteTarget(null);
+      setNotice('Reminder deleted.');
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not delete reminder. Try again.'); }
     finally { setBusy(false); }
   }
 
@@ -325,7 +347,7 @@ export default function App() {
         <div className="conversation" aria-live="polite">
           {turns.length === 0 && <div className="example-card"><span className="sparkle">✦</span><div><strong>Try something like</strong><p>“Remind me every weekday at 8:30 to take my vitamins.”</p></div></div>}
           {turns.map(turn => <div className="turn" key={turn.id}><div className="bubble user-bubble">{turn.user}</div><div className="bubble assistant-bubble">{turn.assistant}</div></div>)}
-          {proposal && <div className="proposal-card"><div className="proposal-title"><Check size={18} /> Ready to save</div><p>{proposal.readback}</p>
+          {proposal && <div className="proposal-card"><div className="proposal-title"><Check size={18} /> {proposal.action === 'delete' ? 'Ready to delete' : 'Ready to save'}</div><p>{proposal.readback}</p>
             {!!proposal.preview.length && <div className="preview-times">{proposal.preview.map(time => <span key={time}>{dateLabel(time)}</span>)}</div>}
             <div className="proposal-actions"><button className="primary" disabled={busy} onClick={confirm}>Confirm</button><button className="secondary" onClick={() => setProposal(null)}>Cancel</button></div>
           </div>}
@@ -342,11 +364,23 @@ export default function App() {
       </section>}
       {view === 'upcoming' && <section className="page"><div className="page-heading"><div className="eyebrow">STAY ON TRACK</div><h1>Upcoming</h1><p>{active.length} active reminder{active.length === 1 ? '' : 's'}</p></div>
         <input className="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search reminders" aria-label="Search reminders" />
-        <div className="reminder-list">{visible.length ? visible.map(r => <article className="reminder-card" key={r.id}><div className="reminder-icon"><Bell size={19} /></div><div className="reminder-body"><h2>{r.title}</h2><p>{r.currentScheduledAt && r.currentScheduledAt < Date.now() ? `Overdue since ${dateLabel(r.currentScheduledAt)} · Next attempt ${dateLabel(r.nextDueAt)}` : dateLabel(r.nextDueAt)}</p>{r.repeatUntilDoneMinutes && <span className="chip">Repeats every {r.repeatUntilDoneMinutes} min until Done</span>}
-          <div className="card-actions"><button disabled={busy} onClick={() => act(r, 'done')}><Check size={16} /> Done</button><button disabled={busy} onClick={() => act(r, 'snooze')}><Clock3 size={16} /> Snooze</button>{r.lastSentAt != null && Date.now() >= r.lastSentAt && Date.now() - r.lastSentAt < 24 * 60 * 60_000 && <button disabled={busy} onClick={() => act(r, 'dismiss')}><X size={16} /> Dismiss alert</button>}<button onClick={() => { setDraft(`Change my reminder “${r.title}” to `); setView('home'); }}>Edit</button></div>{r.repeatUntilDoneMinutes && <p className="action-help">Dismiss closes this alert; Done stops its repeat nudges.</p>}</div></article>) : <div className="empty-state">No reminders found. Tap the microphone to make one.</div>}</div>
+        <div className="reminder-list">{visible.length ? visible.map(r => {
+          const group = reminderGroup(r, Date.now());
+          return <article className="reminder-card" key={r.id}><div className="reminder-icon"><Bell size={19} /></div><div className="reminder-body"><h2>{r.title}</h2>{r.repeatUntilDoneMinutes && <span className="chip">Repeats every {r.repeatUntilDoneMinutes} min until Done</span>}
+            <div className="card-actions"><button disabled={busy} onClick={() => { setDraft(`Change my reminder “${r.title}” to `); setView('home'); }}>Edit</button><button className="danger-text" disabled={busy} onClick={() => setDeleteTarget(r)}><Trash2 size={16} /> Delete</button></div>
+            <div className="occurrence-list">
+              {group.alert && <div className="occurrence-row alert-row"><strong>Alert sent</strong><span>{dateLabel(group.alert.scheduledAt)}</span>{group.alert.nextNudgeAt && <span>Next alert: {dateLabel(group.alert.nextNudgeAt)}</span>}<div className="card-actions"><button disabled={busy} onClick={() => act(r, 'done', group.alert!.occurrenceId)}><Check size={16} /> Done</button><button disabled={busy} onClick={() => act(r, 'snooze', group.alert!.occurrenceId)}><Clock3 size={16} /> Snooze 10 min</button></div></div>}
+              {group.retryAt && <div className="occurrence-row"><strong>Retrying delivery</strong><span>{dateLabel(group.retryAt)}</span></div>}
+              {group.future.map((time, i) => <div className="occurrence-row" key={time}><strong>{i === 0 ? 'Next' : 'Later'}</strong><span>{dateLabel(time)}</span></div>)}
+            </div>
+          </div></article>;
+        }) : <div className="empty-state">No reminders found. Tap the microphone to make one.</div>}</div>
       </section>}
       {view === 'history' && <section className="page"><div className="page-heading"><div className="eyebrow">RECENT ACTIVITY</div><h1>History</h1><p>Delivered, completed, and canceled reminders</p></div>
-        <div className="history-list">{past.length ? past.map(r => <div className="history-item" key={r.id}><div className="history-dot" /><div><strong>{r.status === 'active' ? r.lastSentAt ? 'Alert sent' : 'Needs scheduling' : r.status}</strong><span>{r.title}</span>{r.status === 'active' && <div className="history-actions"><button disabled={busy} onClick={() => act(r, 'done')}>Done</button><button disabled={busy} onClick={() => act(r, 'snooze')}>Snooze 10 min</button></div>}</div><time>{dateLabel(r.status === 'active' ? r.lastSentAt ?? r.updatedAt : r.updatedAt)}</time></div>) : <div className="empty-state">No past reminders yet.</div>}</div>
+        <div className="history-list">{past.length ? past.map(r => {
+          const alert = r.status === 'active' ? reminderGroup(r, Date.now()).alert : null;
+          return <div className="history-item" key={r.id}><div className="history-dot" /><div><strong>{alert ? 'Alert sent' : r.status === 'active' ? 'Finished schedule' : r.status}</strong><span>{r.title}</span>{alert && <div className="history-actions"><button disabled={busy} onClick={() => act(r, 'done', alert.occurrenceId)}>Done</button><button disabled={busy} onClick={() => act(r, 'snooze', alert.occurrenceId)}>Snooze 10 min</button></div>}<button className="history-delete danger-text" disabled={busy} onClick={() => setDeleteTarget(r)}><Trash2 size={14} /> Delete</button></div><time>{dateLabel(r.lastSentAt ?? r.updatedAt)}</time></div>;
+        }) : <div className="empty-state">No past reminders yet.</div>}</div>
         <h2 className="activity-heading">Recent actions</h2><div className="history-list">{events.length ? events.map(e => <div className="history-item" key={e.id}><div className="history-dot" /><div><strong>{e.action}</strong><span>{reminders.find(r => r.id === e.reminderId)?.title || 'Reminder'}</span></div><time>{dateLabel(e.at)}</time></div>) : <div className="empty-state">Nothing here yet.</div>}</div></section>}
       {view === 'settings' && <section className="page settings-page"><div className="page-heading"><div className="eyebrow">MAKE IT YOURS</div><h1>Settings</h1></div>
         <div className="setting-card"><div><strong>Appearance</strong><p>Follow your phone or choose a look</p></div><div className="segmented">{(['system', 'light', 'dark'] as Theme[]).map(mode => <button className={theme === mode ? 'selected' : ''} key={mode} onClick={() => setTheme(mode)}>{mode === 'light' ? <Sun size={15} /> : mode === 'dark' ? <Moon size={15} /> : null}{mode}</button>)}</div></div>
@@ -356,6 +390,7 @@ export default function App() {
         <div className="setting-card"><div><strong>Account</strong><p>{user.email}</p></div><button className="secondary" onClick={() => signOutUser().catch(error => setNotice(error.message))}>Sign out</button></div>
       </section>}
     </main>
+    {deleteTarget && <div className="dialog-backdrop"><div className="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title"><h2 id="delete-title">Delete reminder?</h2><p>“{deleteTarget.title}” and its reminder records will be permanently deleted. This cannot be undone.</p><div className="dialog-actions"><button className="secondary" disabled={busy} onClick={() => setDeleteTarget(null)}>Keep reminder</button><button className="delete-confirm" disabled={busy} onClick={removeReminder}>Delete permanently</button></div></div></div>}
     {notice && <div className="toast" role="status"><span>{notice}</span><button aria-label="Dismiss notice" onClick={() => setNotice('')}><X size={16} /></button></div>}
     <nav className="bottom-nav" aria-label="Main navigation">
       <button className={view === 'home' ? 'active' : ''} onClick={() => setView('home')}><Mic size={20} /><span>Ask</span></button>

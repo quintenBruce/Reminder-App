@@ -30,6 +30,8 @@ export interface ReminderRecord {
   updatedAt: number;
   lastSentAt?: number;
   lastScheduledAt?: number;
+  lastAcknowledgedScheduledAt?: number;
+  deletionRequestedAt?: number;
   failedAttempts?: number;
   dismissedAt?: number;
   leaseUntil?: number;

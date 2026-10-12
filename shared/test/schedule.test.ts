@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nextOccurrence, previewOccurrences, type ReminderRecord } from '../src/schedule';
-import { afterDelivery, applyReminderAction, currentAlertId, reminderSection } from '../src/reminderState';
+import { afterDelivery, applyReminderAction, canPersistDelivery, currentAlertId, reminderGroup, reminderSection } from '../src/reminderState';
 
 const ms = (value: string) => Date.parse(value);
 const iso = (value: number | null) => value === null ? null : new Date(value).toISOString();
@@ -72,6 +72,16 @@ describe('reminder actions and delivery', () => {
     expect(result.nextDueAt).toBe(scheduled + 11 * 60_000);
   });
 
+  it('snoozing an interval occurrence does not skip the next regular occurrence', () => {
+    const due = ms('2026-10-11T09:00:00-05:00');
+    const r = reminder({ rule: { kind: 'interval', startAt: '2026-10-11T09:00:00-05:00', everyMinutes: 5 },
+      lastScheduledAt: due, lastSentAt: due + 1000, nextDueAt: due + 300_000 });
+    const snoozed = reminder({ ...r, ...applyReminderAction(r, 'snooze', due + 2000, 10, `r1_${due}`) });
+    expect(snoozed.nextDueAt).toBe(due + 602_000);
+    const sent = afterDelivery(snoozed, due, due + 603_000, true);
+    expect(sent.update.nextDueAt).toBe(due + 300_000);
+  });
+
   it('Done on a delivered notification does not skip the next base occurrence', () => {
     const prior = ms('2026-10-11T09:00:00-05:00');
     const next = ms('2026-10-12T09:00:00-05:00');
@@ -81,6 +91,8 @@ describe('reminder actions and delivery', () => {
     const result = applyReminderAction(r, 'done', prior + 60_000, null, `r1_${prior}`);
     expect(result.nextDueAt).toBeUndefined();
     expect(result.status).toBeUndefined();
+    expect(result.lastAcknowledgedScheduledAt).toBe(prior);
+    expect(reminderGroup({ ...r, ...result }, prior + 60_000).alert).toBeNull();
   });
 
   it('Upcoming actions target a recent alert but not an old recurrence', () => {
@@ -107,7 +119,46 @@ describe('reminder actions and delivery', () => {
     expect(sent.update.nextDueAt).toBeNull();
     const delivered = reminder(sent.update);
     expect(reminderSection(delivered)).toBe('history');
+    expect(reminderGroup(delivered, due + 2000).alert?.occurrenceId).toBe(`r1_${due}`);
     expect(applyReminderAction(delivered, 'done', due + 2000, null, `r1_${due}`)).toMatchObject({ status: 'completed' });
     expect(applyReminderAction(delivered, 'snooze', due + 2000, 10, `r1_${due}`)).toMatchObject({ nextDueAt: due + 602000 });
+  });
+
+  it('groups one-time, daily, finite, and repeat-until-Done schedules', () => {
+    const due = ms('2026-10-11T14:00:00-05:00');
+    expect(reminderGroup(reminder(), due - 1000).future).toEqual([due]);
+    const daily = reminder({ rule: { kind: 'daily', startAt: '2026-10-11T14:00:00-05:00',
+      timeZone: 'America/Chicago', hour: 14, minute: 0 } });
+    expect(reminderGroup(daily, due - 1000).future).toHaveLength(3);
+    const finite = reminder({ rule: { kind: 'interval', startAt: '2026-10-11T14:00:00-05:00',
+      everyMinutes: 5, endAt: '2026-10-11T14:10:00-05:00' } });
+    expect(reminderGroup(finite, due - 1000).future).toEqual([due, due + 300_000, due + 600_000]);
+    const nudging = reminder({ repeatUntilDoneMinutes: 5, lastSentAt: due + 1000,
+      lastScheduledAt: due, currentScheduledAt: due, nextDueAt: due + 301_000 });
+    const group = reminderGroup(nudging, due + 2000);
+    expect(group.alert?.nextNudgeAt).toBe(due + 301_000);
+    expect(group.future).toEqual([]);
+    expect(group.retryAt).toBeNull();
+  });
+
+  it('shows a failed delivery as a retry without an actionable alert', () => {
+    const due = ms('2026-10-11T14:00:00-05:00');
+    const failed = reminder({ currentScheduledAt: due, nextDueAt: due + 60_000 });
+    expect(reminderGroup(failed, due + 1000)).toMatchObject({ alert: null, retryAt: due + 60_000 });
+  });
+
+  it('does not allow acting on an acknowledged alert again', () => {
+    const due = ms('2026-10-11T14:00:00-05:00');
+    const r = reminder({ lastSentAt: due, lastScheduledAt: due, lastAcknowledgedScheduledAt: due });
+    expect(() => applyReminderAction(r, 'snooze', due + 1000, 10, `r1_${due}`)).toThrow('already done');
+  });
+
+  it('rejects an in-flight delivery after deletion stops scheduling', () => {
+    const claimed = reminder({ version: 4, leaseUntil: 1234 });
+    expect(canPersistDelivery(claimed, 4, 1234)).toBe(true);
+    const stopped = reminder({ ...claimed, status: 'canceled', nextDueAt: null, leaseUntil: 0,
+      deletionRequestedAt: 5678, version: 5 });
+    expect(canPersistDelivery(stopped, 4, 1234)).toBe(false);
+    expect(canPersistDelivery(null, 4, 1234)).toBe(false);
   });
 });

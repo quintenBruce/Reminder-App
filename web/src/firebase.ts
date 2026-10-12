@@ -49,9 +49,9 @@ export async function signOutUser() {
   await signOut(auth);
 }
 
-export function callable<TInput, TOutput>(name: string) {
+export function callable<TInput, TOutput>(name: string, timeout?: number) {
   return async (data: TInput): Promise<TOutput> => {
-    const fn = httpsCallable<TInput, TOutput>(functions, name);
+    const fn = httpsCallable<TInput, TOutput>(functions, name, timeout ? { timeout } : undefined);
     const response = await fn(data);
     return response.data;
   };

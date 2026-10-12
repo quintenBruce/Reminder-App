@@ -6,6 +6,7 @@ import type { ReminderRecord } from '../../shared/src/schedule';
 import { currentAlertId } from '../../shared/src/reminderState';
 import { auth, callable, closeReminderNotifications, database, enablePush, needsPushRegistration, signIn, signOutUser } from './firebase';
 import { microphoneErrorMessage, startVoiceRecording, withTimeout, type VoiceRecording } from './voice';
+import { playHaptic } from './haptics';
 
 type View = 'home' | 'upcoming' | 'history' | 'settings';
 type Theme = 'system' | 'light' | 'dark';
@@ -214,6 +215,7 @@ export default function App() {
     setWorkingLabel('Saving reminder…');
     try {
       await call.confirm({ proposalId: proposal.id });
+      playHaptic('success');
       setNotice(pushNeeded ? 'Saved. Allow Firefox notifications to get alerts.'
         : 'Notification' in window && Notification.permission === 'denied'
           ? 'Saved, but Firefox notifications are blocked. Allow them in browser settings.' : 'Saved.');
@@ -247,6 +249,7 @@ export default function App() {
   }
 
   async function toggleRecording() {
+    playHaptic('tap');
     if (startingRecording) {
       recordingStartRef.current++;
       setStartingRecording(false);
@@ -276,10 +279,12 @@ export default function App() {
   }
 
   async function act(reminder: ReminderRecord, action: 'done' | 'dismiss' | 'snooze') {
+    playHaptic('tap');
     setBusy(true);
     try {
       await call.act({ reminderId: reminder.id, action, snoozeMinutes: action === 'snooze' ? 10 : undefined,
         requestId: crypto.randomUUID(), occurrenceId: currentAlertId(reminder, Date.now()) });
+      playHaptic('success');
       await closeReminderNotifications(reminder.id).catch(() => undefined);
       setNotice(action === 'snooze' ? 'Snoozed 10 minutes.' : action === 'dismiss' ? 'Alert hidden. Future reminders remain scheduled.' : 'Marked done.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Action failed.'); }

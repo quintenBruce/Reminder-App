@@ -29,3 +29,5 @@ Backend Cloud Logs use structured `operation.started`, `operation.stage`, `opera
 Delivery is best effort. Chrome is not required. A notification action opens the authenticated app and applies the requested action; the service worker does not hold credentials. Text conversations remain until deleted. Raw audio is sent for transcription and is not stored in Firestore.
 
 **Dismiss alert** closes a currently displayed notification and leaves future nudges scheduled. **Done** finishes the current occurrence and stops its repeat-until-Done nudges; recurring reminders keep their next regular occurrence. Upcoming only offers Dismiss alert for a recently sent or active alert.
+
+The microphone and reminder action buttons request short haptic feedback when the browser permits it. No sound is played by this feature. Firefox for Android currently has an [open `navigator.vibrate()` issue](https://bugzilla.mozilla.org/show_bug.cgi?id=1653318), so button haptics may be unavailable on that browser.

@@ -4,11 +4,11 @@ self.addEventListener('push', event => {
   try { message = event.data ? event.data.json() : {}; } catch { /* Ignore malformed payload. */ }
   const data = message.data || message;
   const title = data.title || 'Remind';
-  const body = data.body || 'You have a reminder.';
+  const body = typeof data.body === 'string' ? data.body.trim() : '';
   const reminderId = data.reminderId || '';
   const occurrenceId = data.occurrenceId || reminderId;
   event.waitUntil(self.registration.showNotification(title, {
-    body,
+    ...(body ? { body } : {}),
     icon: '/icon-192.png',
     badge: '/badge-96.png',
     tag: occurrenceId,

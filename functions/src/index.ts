@@ -11,7 +11,9 @@ import { nextOccurrence, previewOccurrences, validateNudge, validateRule, type R
 import { afterDelivery, applyReminderAction, canPersistDelivery, hasCurrentAlert } from '../../shared/src/reminderState';
 import { deliveryDiagnostic } from './deliveryDiagnostics';
 import { errorFields, observe } from './observability';
-import { purgeRelatedRecords, type RelatedRecordKind } from './reminderDeletion';
+import { purgeLinkedConversations, purgeRelatedRecords, type RelatedRecordKind } from './reminderDeletion';
+import { reminderPushData } from './notificationPayload';
+import { canConfirmDraft, canDiscardDraft, purgeConversationProposals, purgeLegacyConversations } from './conversationCleanup';
 
 initializeApp();
 const db = getFirestore();
@@ -66,6 +68,27 @@ function requireGoogleUser(request: CallableRequest): string {
 }
 
 function root(uid: string) { return db.collection('users').doc(uid); }
+function conversationRef(uid: string, conversationId: string) { return root(uid).collection('conversations').doc(conversationId); }
+async function deleteConversationTree(uid: string, conversationId: string) {
+  await purgeConversationProposals(uid, conversationId,
+    async (accountId, id, limit) => (await root(accountId).collection('proposals')
+      .where('conversationId', '==', id).limit(limit).get()).docs.map(doc => doc.ref),
+    async refs => {
+      const batch = db.batch();
+      refs.forEach(ref => batch.delete(ref));
+      await batch.commit();
+    });
+  await db.recursiveDelete(conversationRef(uid, conversationId));
+}
+async function claimDraftForDeletion(uid: string, conversationId: string): Promise<boolean> {
+  const ref = conversationRef(uid, conversationId);
+  return db.runTransaction(async tx => {
+    const snap = await tx.get(ref);
+    if (!canDiscardDraft(snap.get('state'), snap.exists)) return false;
+    if (snap.exists && snap.get('state') === 'draft') tx.update(ref, { state: 'deleting', updatedAt: Date.now() });
+    return true;
+  });
+}
 function textValue(value: unknown, max = 1000): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max) {
     throw new HttpsError('invalid-argument', 'Text is empty or too long.');
@@ -170,7 +193,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   const [candidatesSnap, turnsSnap, pendingSnap] = await Promise.all([
     Promise.all([remindersRef.where('status', '==', 'active').limit(40).get(),
       remindersRef.where('status', 'in', ['completed', 'canceled']).limit(20).get()]),
-    root(uid).collection('conversations').doc(conversationId).collection('turns').orderBy('createdAt', 'desc').limit(8).get(),
+    conversationRef(uid, conversationId).collection('turns').orderBy('createdAt', 'desc').limit(8).get(),
     pendingProposalId ? root(uid).collection('proposals').doc(pendingProposalId).get() : Promise.resolve(null),
   ]);
   const pending = pendingSnap?.exists && pendingSnap.get('conversationId') === conversationId && pendingSnap.get('expiresAt') > Date.now()
@@ -204,10 +227,13 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     d.action = 'clarify'; d.message = 'That reminder has no sent alert to act on yet.';
   }
   const now = Date.now();
-  const turns = root(uid).collection('conversations').doc(conversationId).collection('turns');
+  const conversation = conversationRef(uid, conversationId);
+  const turns = conversation.collection('turns');
+  const draftMetadata = { schemaVersion: 2, state: 'draft', updatedAt: now };
   if (d.action === 'list' || d.action === 'clarify') {
     const reply = d.action === 'list' ? (candidates.length ? candidates.slice(0, 8).map(r => r.title).join('; ') : 'You have no active reminders.') : textValue(d.message, 500);
-    await turns.add({ user: utterance, assistant: reply, createdAt: now });
+    await Promise.all([conversation.set(draftMetadata, { merge: true }),
+      turns.add({ user: utterance, assistant: reply, createdAt: now })]);
     trace.stage('conversation.saved', { conversationId, action: d.action });
     return { conversationId, reply, proposal: null };
   }
@@ -236,6 +262,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     snoozeMinutes: d.snoozeMinutes, readback, preview, createdAt: now, expiresAt: now + 10 * 60_000,
   };
   await Promise.all([
+    conversation.set(draftMetadata, { merge: true }),
     root(uid).collection('proposals').doc(proposal.id).set(proposal),
     turns.add({ user: utterance, assistant: readback, proposalId: proposal.id, createdAt: now }),
   ]);
@@ -243,13 +270,18 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   return { conversationId, reply: readback, proposal };
 }));
 
-async function applyAction(uid: string, reminderId: string, action: 'done' | 'dismiss' | 'snooze', snoozeMinutes: number | null, requestId: string, expectedVersion?: number | null, occurrenceId?: string) {
+async function applyAction(uid: string, reminderId: string, action: 'done' | 'dismiss' | 'snooze', snoozeMinutes: number | null, requestId: string, expectedVersion?: number | null, occurrenceId?: string, conversationId?: string) {
   const ref = root(uid).collection('reminders').doc(reminderId);
   const idempotency = root(uid).collection('actions').doc(requestId);
   const now = Date.now();
   return db.runTransaction(async tx => {
-    const [prior, snap] = await Promise.all([tx.get(idempotency), tx.get(ref)]);
+    const conversation = conversationId ? conversationRef(uid, conversationId) : null;
+    const [prior, snap, conversationSnap] = await Promise.all([tx.get(idempotency), tx.get(ref),
+      conversation ? tx.get(conversation) : Promise.resolve(null)]);
     if (prior.exists) return prior.data()?.result;
+    if (conversation && !canConfirmDraft(conversationSnap?.get('state'))) {
+      throw new HttpsError('failed-precondition', 'Conversation was abandoned. Please ask again.');
+    }
     if (!snap.exists) throw new HttpsError('not-found', 'Reminder not found.');
     const r = record(snap.data()!, snap.id);
     if (r.status !== 'active') throw new HttpsError('failed-precondition', 'Reminder is canceled.');
@@ -270,6 +302,8 @@ async function applyAction(uid: string, reminderId: string, action: 'done' | 'di
     tx.create(idempotency, { result, createdAt: now });
     const eventId = randomUUID();
     tx.create(root(uid).collection('events').doc(eventId), { reminderId, action, at: now });
+    if (conversation) tx.set(conversation, { schemaVersion: 2,
+      state: 'linked', reminderId, linkedAt: now, updatedAt: now }, { merge: true });
     return result;
   });
 }
@@ -316,6 +350,10 @@ async function deleteReminderData(uid: string, reminderId: string, expectedVersi
       refs.forEach(ref => batch.delete(ref));
       await batch.commit();
     });
+  await purgeLinkedConversations(uid, reminderId,
+    async (accountId, id, limit) => (await root(accountId).collection('conversations')
+      .where('reminderId', '==', id).limit(limit).get()).docs.map(doc => doc.ref),
+    async ref => db.recursiveDelete(ref));
   await reminder.delete();
   return { reminderId, deleted: true, removed };
 }
@@ -328,6 +366,7 @@ export const deleteReminder = onCall({ region, enforceAppCheck: true, timeoutSec
     throw new HttpsError('invalid-argument', 'Invalid reminder version.');
   }
   const proposalId = stringValue(request.data?.proposalId, 100);
+  let deletingConversationId: string | null = null;
   if (proposalId) {
     const proposal = await root(uid).collection('proposals').doc(proposalId).get();
     if (proposal.exists) {
@@ -341,6 +380,7 @@ export const deleteReminder = onCall({ region, enforceAppCheck: true, timeoutSec
           throw new HttpsError('failed-precondition', 'Deletion proposal expired. Please ask again.');
         }
       }
+      deletingConversationId = p.conversationId;
     } else {
       const current = await root(uid).collection('reminders').doc(reminderId).get();
       if (current.exists && !current.get('deletionRequestedAt')) {
@@ -349,6 +389,7 @@ export const deleteReminder = onCall({ region, enforceAppCheck: true, timeoutSec
     }
   }
   const result = await deleteReminderData(uid, reminderId, expectedVersion);
+  if (deletingConversationId) await deleteConversationTree(uid, deletingConversationId);
   trace.stage('reminder.deleted', { reminderId, relatedRecordsRemoved: result.removed });
   return result;
 }));
@@ -374,12 +415,13 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true, timeoutSe
       }
     }
     const result = await deleteReminderData(uid, p.targetId, p.baseVersion);
+    await deleteConversationTree(uid, p.conversationId);
     trace.stage('proposal.deletedReminder', { proposalId, reminderId: p.targetId, relatedRecordsRemoved: result.removed });
     return result;
   }
   if (Date.now() > p.expiresAt) throw new HttpsError('failed-precondition', 'Proposal expired. Please ask again.');
   if (['done', 'dismiss', 'snooze'].includes(p.action)) {
-    const result = await applyAction(uid, p.targetId!, p.action as 'done' | 'dismiss' | 'snooze', p.snoozeMinutes, proposalId, p.baseVersion);
+    const result = await applyAction(uid, p.targetId!, p.action as 'done' | 'dismiss' | 'snooze', p.snoozeMinutes, proposalId, p.baseVersion, undefined, p.conversationId);
     await ref.update({ committedResult: result });
     trace.stage('proposal.committed', { proposalId, reminderId: p.targetId, action: p.action });
     return result;
@@ -387,9 +429,14 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true, timeoutSe
   const target = p.targetId ? root(uid).collection('reminders').doc(p.targetId) : root(uid).collection('reminders').doc();
   const now = Date.now();
   const result = await db.runTransaction(async tx => {
-    const [freshProposal, prior] = await Promise.all([tx.get(ref), p.targetId ? tx.get(target) : Promise.resolve(null)]);
+    const conversation = conversationRef(uid, p.conversationId);
+    const [freshProposal, prior, conversationSnap] = await Promise.all([tx.get(ref),
+      p.targetId ? tx.get(target) : Promise.resolve(null), tx.get(conversation)]);
     const current = freshProposal.data() as Proposal;
     if (current.committedResult) return current.committedResult;
+    if (!canConfirmDraft(conversationSnap.get('state'))) {
+      throw new HttpsError('failed-precondition', 'Conversation was abandoned. Please ask again.');
+    }
     if (now > current.expiresAt) throw new HttpsError('failed-precondition', 'Proposal expired.');
     const existing = prior?.exists ? record(prior.data()!, prior.id) : null;
     if (p.targetId && (!existing || existing.version !== p.baseVersion)) {
@@ -411,6 +458,8 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true, timeoutSe
     } else throw new HttpsError('invalid-argument', 'Unsupported proposal.');
     const result = { reminderId: target.id, action: p.action, at: now };
     tx.update(ref, { committedResult: result });
+    tx.set(conversation, { schemaVersion: 2, state: 'linked',
+      reminderId: target.id, linkedAt: now, updatedAt: now }, { merge: true });
     tx.create(root(uid).collection('events').doc(randomUUID()), { reminderId: target.id, action: p.action, at: now });
     return result;
   });
@@ -462,21 +511,51 @@ export const unregisterDevice = onCall({ region, enforceAppCheck: true }, reques
 export const deleteConversation = onCall({ region, enforceAppCheck: true }, request => observe('deleteConversation', request.auth?.uid, async trace => {
   const uid = requireGoogleUser(request);
   const conversationId = textValue(request.data?.conversationId, 100);
-  const ref = root(uid).collection('conversations').doc(conversationId);
-  let deletedTurns = 0;
-  while (true) {
-    const page = await ref.collection('turns').limit(400).get();
-    if (page.empty) break;
-    const batch = db.batch();
-    page.docs.forEach(doc => batch.delete(doc.ref));
-    await batch.commit();
-    deletedTurns += page.size;
-    trace.stage('turns.deleted', { conversationId, deletedTurns });
+  if (request.data?.draftOnly === true) {
+    if (!await claimDraftForDeletion(uid, conversationId)) {
+      trace.stage('linkedConversation.preserved', { conversationId });
+      return { deleted: false };
+    }
   }
-  await ref.delete();
-  trace.stage('conversation.deleted', { conversationId, deletedTurns });
+  await deleteConversationTree(uid, conversationId);
+  trace.stage('conversation.deleted', { conversationId });
   return { deleted: true };
 }));
+
+export const initializeConversations = onCall({ region, enforceAppCheck: true, timeoutSeconds: 540 }, request => observe('initializeConversations', request.auth?.uid, async trace => {
+  const uid = requireGoogleUser(request);
+  const owner = root(uid);
+  if ((await owner.get()).get('conversationSchemaVersion') === 2) return { deleted: 0 };
+  const documents = await owner.collection('conversations').listDocuments();
+  const deleted = await purgeLegacyConversations(documents,
+    async ref => (await ref.get()).get('schemaVersion') as number | undefined,
+    async ref => deleteConversationTree(uid, ref.id));
+  await owner.set({ conversationSchemaVersion: 2 }, { merge: true });
+  trace.stage('legacyConversations.deleted', { count: deleted });
+  return { deleted };
+}));
+
+export const cleanupDraftConversations = onSchedule({ schedule: '0 3 * * *', timeZone: 'UTC', region, maxInstances: 1 }, async () => {
+  const cutoff = Date.now() - 24 * 60 * 60_000;
+  let deleted = 0;
+  for (;;) {
+    const page = await db.collectionGroup('conversations').where('state', 'in', ['draft', 'deleting'])
+      .where('updatedAt', '<=', cutoff).orderBy('updatedAt').limit(100).get();
+    if (page.empty) break;
+    for (const doc of page.docs) {
+      if (doc.ref.parent.parent?.parent?.id !== 'users') {
+        warn('cleanupDraftConversations.unexpectedPath', { path: doc.ref.path });
+        return;
+      }
+      const uid = doc.ref.parent.parent!.id;
+      if (await claimDraftForDeletion(uid, doc.id)) {
+        await deleteConversationTree(uid, doc.id);
+        deleted++;
+      }
+    }
+  }
+  info('cleanupDraftConversations.completed', { operation: 'cleanupDraftConversations', deleted });
+});
 
 export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', region, maxInstances: 1 }, async () => {
   const operationId = randomUUID();
@@ -520,8 +599,7 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
       try {
         const results = await getMessaging().sendEachForMulticast({
           tokens: selected.map(device => device.get('token') as string),
-          data: { title: claimed.title, body: claimed.notes || claimed.title, reminderId: claimed.id,
-            url: `/?reminder=${encodeURIComponent(claimed.id)}`, occurrenceId: `${claimed.id}_${scheduledAt}` },
+          data: reminderPushData(claimed.title, claimed.notes, claimed.id, `${claimed.id}_${scheduledAt}`),
           webpush: { headers: { TTL: '3600' } },
         });
         diagnostic = deliveryDiagnostic(selected.length, results.responses);

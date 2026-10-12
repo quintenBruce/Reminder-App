@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { purgeRelatedRecords, type RelatedRecordKind } from '../src/reminderDeletion';
+import { purgeLinkedConversations, purgeRelatedRecords, type RelatedRecordKind } from '../src/reminderDeletion';
 
 type Row = { uid: string; reminderId: string; kind: RelatedRecordKind; id: number };
 
@@ -31,5 +31,20 @@ describe('reminder cleanup', () => {
     expect(rows).toHaveLength(1);
     expect(await purgeRelatedRecords('alice', 'r1', load, remove)).toBe(1);
     expect(await purgeRelatedRecords('alice', 'r1', load, remove)).toBe(0);
+  });
+
+  it('removes linked conversation trees in pages, preserves another account, and retries', async () => {
+    const sessions = Array.from({ length: 102 }, (_, id) => ({ uid: 'alice', reminderId: 'r1', id }));
+    sessions.push({ uid: 'bob', reminderId: 'r1', id: 500 });
+    const load = async (uid: string, reminderId: string, limit: number) =>
+      sessions.filter(session => session.uid === uid && session.reminderId === reminderId).slice(0, limit);
+    let failed = false;
+    const remove = async (session: typeof sessions[number]) => {
+      if (session.id === 100 && !failed) { failed = true; throw new Error('temporary failure'); }
+      sessions.splice(sessions.indexOf(session), 1);
+    };
+    await expect(purgeLinkedConversations('alice', 'r1', load, remove)).rejects.toThrow('temporary failure');
+    expect(await purgeLinkedConversations('alice', 'r1', load, remove)).toBe(2);
+    expect(sessions).toEqual([{ uid: 'bob', reminderId: 'r1', id: 500 }]);
   });
 });

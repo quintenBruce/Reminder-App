@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, getRedirectResult, type User } from 'firebase/auth';
-import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { Bell, Check, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
 import type { ReminderRecord } from '../../shared/src/schedule';
 import { reminderGroup, reminderSection } from '../../shared/src/reminderState';
 import { auth, callable, closeReminderNotifications, database, enablePush, needsPushRegistration, signIn, signOutUser } from './firebase';
 import { microphoneErrorMessage, startVoiceRecording, withTimeout, type VoiceRecording } from './voice';
 import { playHaptic } from './haptics';
+import { createConversationSession, shouldSpeakReply, type RequestSource } from './conversationFlow';
 
 type View = 'home' | 'upcoming' | 'history' | 'settings';
 type Theme = 'system' | 'light' | 'dark';
 type Proposal = { id: string; readback: string; preview: number[]; action: string; targetId: string | null; baseVersion: number | null };
 type Turn = { id: string; user: string; assistant: string; createdAt: number };
 type Event = { id: string; reminderId: string; action: string; at: number };
+type SavedConversation = { id: string; reminderId: string; state: string; linkedAt: number };
 
 const call = {
   transcribe: callable<{ audioBase64: string; mimeType: string }, { transcript: string }>('transcribeAudio'),
@@ -21,20 +23,13 @@ const call = {
   act: callable<{ reminderId: string; action: string; snoozeMinutes?: number; requestId: string; occurrenceId?: string }, unknown>('applyOccurrenceAction'),
   deleteReminder: callable<{ reminderId: string; expectedVersion: number; proposalId?: string }, { deleted: boolean }>('deleteReminder', 540_000),
   deleteConversation: callable<{ conversationId: string }, { deleted: boolean }>('deleteConversation'),
+  discardDraft: callable<{ conversationId: string; draftOnly: boolean }, { deleted: boolean }>('deleteConversation'),
+  initializeConversations: callable<Record<string, never>, { deleted: number }>('initializeConversations', 540_000),
 };
 
 function dateLabel(ms: number | null | undefined) {
   if (ms == null) return '—';
   return new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(ms);
-}
-
-function getConversationId(uid: string) {
-  const key = `remind-conversation-id:${uid}`;
-  const prior = localStorage.getItem(key);
-  if (prior) return prior;
-  const id = crypto.randomUUID();
-  localStorage.setItem(key, id);
-  return id;
 }
 
 function speak(text: string) {
@@ -64,6 +59,13 @@ export default function App() {
   const [reminders, setReminders] = useState<ReminderRecord[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [proposalSpoken, setProposalSpoken] = useState(false);
+  const [detailReminderId, setDetailReminderId] = useState<string | null>(null);
+  const [savedConversations, setSavedConversations] = useState<SavedConversation[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [savedTurns, setSavedTurns] = useState<Turn[]>([]);
+  const [deleteSessionId, setDeleteSessionId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ReminderRecord | null>(null);
   const [draft, setDraft] = useState('');
   const [search, setSearch] = useState('');
@@ -78,6 +80,7 @@ export default function App() {
   const recordingStartRef = useRef(0);
   const recordingTimeoutRef = useRef<number | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => () => {
     recordingStartRef.current++;
@@ -87,8 +90,17 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, next => {
-      setReminders([]); setTurns([]); setEvents([]); setProposal(null);
-      setConversationId(next ? getConversationId(next.uid) : '');
+      setReminders([]); setTurns([]); setEvents([]); setProposal(null); setProposalSpoken(false);
+      setDetailReminderId(null); setSavedConversations([]); setSelectedSessionId(null); setSavedTurns([]);
+      if (next) {
+        const { id, previous } = createConversationSession(next.uid, localStorage, () => crypto.randomUUID());
+        localStorage.removeItem('remind-conversation-id');
+        setConversationId(id);
+        if (next.emailVerified && next.providerData.some(provider => provider.providerId === 'google.com')) {
+          void call.initializeConversations({}).catch(error => setNotice(`Could not clear old conversation history: ${error.message}`));
+          if (previous) void call.discardDraft({ conversationId: previous, draftOnly: true }).catch(() => undefined);
+        }
+      } else setConversationId('');
       setUser(next); setAuthReady(true);
     });
     getRedirectResult(auth).catch(error => setNotice(error.message));
@@ -105,19 +117,41 @@ export default function App() {
     return () => media.removeEventListener('change', syncColor);
   }, [theme]);
   useEffect(() => {
-    if (!user || !conversationId || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com')) return;
+    if (!user || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com')) return;
     const base = collection(database, 'users', user.uid, 'reminders');
     const stopReminders = onSnapshot(base, snapshot => {
       setReminders(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ReminderRecord)));
     }, error => setNotice(error.message));
-    const stopTurns = onSnapshot(query(collection(database, 'users', user.uid, 'conversations', conversationId, 'turns'), orderBy('createdAt', 'desc'), limit(100)), snapshot => {
-      setTurns(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Turn)).reverse());
-    }, error => setNotice(error.message));
     const stopEvents = onSnapshot(query(collection(database, 'users', user.uid, 'events'), orderBy('at', 'desc'), limit(100)), snapshot => {
       setEvents(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Event)));
     }, error => setNotice(error.message));
-    return () => { stopReminders(); stopTurns(); stopEvents(); };
+    return () => { stopReminders(); stopEvents(); };
+  }, [user]);
+  useEffect(() => {
+    if (!user || !conversationId || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com')) return;
+    return onSnapshot(query(collection(database, 'users', user.uid, 'conversations', conversationId, 'turns'),
+      orderBy('createdAt', 'desc'), limit(100)), snapshot => {
+      setTurns(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Turn)).reverse());
+    }, error => setNotice(error.message));
   }, [user, conversationId]);
+  useEffect(() => {
+    if (!user || !detailReminderId) { setSavedConversations([]); return; }
+    return onSnapshot(query(collection(database, 'users', user.uid, 'conversations'),
+      where('reminderId', '==', detailReminderId)), snapshot => {
+      const sessions = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as SavedConversation))
+        .filter(session => session.state === 'linked').sort((a, b) => b.linkedAt - a.linkedAt);
+      setSavedConversations(sessions);
+      setSessionsLoading(false);
+      setSelectedSessionId(current => sessions.some(session => session.id === current) ? current : sessions[0]?.id ?? null);
+    }, error => { setSessionsLoading(false); setNotice(error.message); });
+  }, [user, detailReminderId]);
+  useEffect(() => {
+    if (!user || !selectedSessionId) { setSavedTurns([]); return; }
+    return onSnapshot(query(collection(database, 'users', user.uid, 'conversations', selectedSessionId, 'turns'),
+      orderBy('createdAt', 'asc')), snapshot => {
+      setSavedTurns(snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Turn)));
+    }, error => setNotice(error.message));
+  }, [user, selectedSessionId]);
   useEffect(() => {
     if (!user || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com') ||
         !('Notification' in window)) return;
@@ -173,7 +207,23 @@ export default function App() {
       if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
   }, [user]);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns.length, proposal]);
+  function scrollToLatest() {
+    requestAnimationFrame(() => endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }));
+  }
+  function startFreshConversation(discardDraft = false) {
+    const previous = conversationId;
+    const fresh = user ? createConversationSession(user.uid, localStorage, () => crypto.randomUUID()).id : crypto.randomUUID();
+    setConversationId(fresh); setTurns([]); setProposal(null); setProposalSpoken(false); setDraft('');
+    if (discardDraft && previous) void call.discardDraft({ conversationId: previous, draftOnly: true }).catch(() => undefined);
+  }
+  useEffect(() => { scrollToLatest(); }, [turns.length, proposal]);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const onResize = () => { if (document.activeElement === inputRef.current || recording) scrollToLatest(); };
+    viewport.addEventListener('resize', onResize);
+    return () => viewport.removeEventListener('resize', onResize);
+  }, [recording]);
   useEffect(() => {
     if (!user || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com')) return;
     const params = new URLSearchParams(location.search);
@@ -184,11 +234,11 @@ export default function App() {
     const occurrenceId = params.get('occurrenceId') || undefined;
     history.replaceState(null, '', '/');
     call.act({ action, reminderId, snoozeMinutes: action === 'snooze' ? 10 : undefined, requestId, occurrenceId })
-      .then(() => setNotice(action === 'done' ? 'Marked done.' : 'Snoozed for 10 minutes.'))
+      .then(() => { startFreshConversation(true); setNotice(action === 'done' ? 'Marked done.' : 'Snoozed for 10 minutes.'); })
       .catch(error => setNotice(error.message));
   }, [user]);
 
-  async function sendText(text: string) {
+  async function sendText(text: string, source: RequestSource = 'typed') {
     const value = text.trim();
     if (!value || busy) return;
     setBusy(true); setWorkingLabel('Understanding your request…'); setNotice(''); setDraft(''); setView('home');
@@ -199,9 +249,9 @@ export default function App() {
       }
       const result = await call.propose({ text: value, conversationId, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, pendingProposalId: proposal?.id });
       setConversationId(result.conversationId);
-      localStorage.setItem('remind-conversation-id', result.conversationId);
       setProposal(result.proposal);
-      if (voiceReply) speak(result.reply);
+      setProposalSpoken(source === 'spoken' && !!result.proposal);
+      if (shouldSpeakReply(source, voiceReply)) speak(result.reply);
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Request failed.'); }
     finally { setBusy(false); }
   }
@@ -226,10 +276,11 @@ export default function App() {
       setNotice(deleting ? 'Reminder deleted.' : pushNeeded ? 'Saved. Allow Firefox notifications to get alerts.'
         : 'Notification' in window && Notification.permission === 'denied'
           ? 'Saved, but Firefox notifications are blocked. Allow them in browser settings.' : 'Saved.');
-      setProposal(null);
+      const shouldSpeak = shouldSpeakReply(proposalSpoken ? 'spoken' : 'typed', voiceReply);
+      startFreshConversation(deleting);
       if (pushNeeded) void pushSetup.then(pushError => setNotice(pushError
         ? `Saved, but notifications are off: ${pushError}` : 'Saved. Notifications enabled.'));
-      if (voiceReply) speak(deleting ? 'Reminder deleted.' : 'Saved.');
+      if (shouldSpeak) speak(deleting ? 'Reminder deleted.' : 'Saved.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Could not save.');
     }
@@ -251,12 +302,13 @@ export default function App() {
         'Transcription timed out. Check your connection and try again.');
       if (!transcript.trim()) throw new Error('No speech was detected. Please try again and speak for a few seconds.');
       setBusy(false);
-      await sendText(transcript);
+      await sendText(transcript, 'spoken');
     } catch (error) { setBusy(false); setNotice(error instanceof Error ? error.message : 'Transcription failed.'); }
   }
 
   async function toggleRecording() {
     playHaptic('tap');
+    scrollToLatest();
     if (startingRecording) {
       recordingStartRef.current++;
       setStartingRecording(false);
@@ -293,6 +345,7 @@ export default function App() {
         requestId: crypto.randomUUID(), occurrenceId });
       playHaptic('success');
       await closeReminderNotifications(reminder.id).catch(() => undefined);
+      startFreshConversation(true);
       setNotice(action === 'snooze' ? 'Snoozed 10 minutes.' : 'Marked done.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Action failed.'); }
     finally { setBusy(false); }
@@ -308,20 +361,27 @@ export default function App() {
       await closeReminderNotifications(target.id).catch(() => undefined);
       playHaptic('success');
       setDeleteTarget(null);
+      startFreshConversation(true);
       setNotice('Reminder deleted.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not delete reminder. Try again.'); }
     finally { setBusy(false); }
   }
 
-  async function clearConversation() {
+  async function removeSavedConversation() {
+    if (!deleteSessionId) return;
     setBusy(true);
     try {
-      await call.deleteConversation({ conversationId });
-      const next = crypto.randomUUID();
-      localStorage.setItem(`remind-conversation-id:${user!.uid}`, next);
-      setConversationId(next); setProposal(null); setNotice('Conversation deleted.');
+      await call.deleteConversation({ conversationId: deleteSessionId });
+      setDeleteSessionId(null);
+      setNotice('Conversation deleted.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not delete history.'); }
     finally { setBusy(false); }
+  }
+
+  function openReminderHistory(reminderId: string) {
+    setSavedConversations([]); setSavedTurns([]); setSelectedSessionId(null); setDeleteSessionId(null);
+    setSessionsLoading(true);
+    setDetailReminderId(reminderId);
   }
 
   const active = reminders.filter(r => reminderSection(r) === 'upcoming').sort((a, b) => (a.nextDueAt ?? Infinity) - (b.nextDueAt ?? Infinity));
@@ -349,14 +409,14 @@ export default function App() {
           {turns.map(turn => <div className="turn" key={turn.id}><div className="bubble user-bubble">{turn.user}</div><div className="bubble assistant-bubble">{turn.assistant}</div></div>)}
           {proposal && <div className="proposal-card"><div className="proposal-title"><Check size={18} /> {proposal.action === 'delete' ? 'Ready to delete' : 'Ready to save'}</div><p>{proposal.readback}</p>
             {!!proposal.preview.length && <div className="preview-times">{proposal.preview.map(time => <span key={time}>{dateLabel(time)}</span>)}</div>}
-            <div className="proposal-actions"><button className="primary" disabled={busy} onClick={confirm}>Confirm</button><button className="secondary" onClick={() => setProposal(null)}>Cancel</button></div>
+            <div className="proposal-actions"><button className="primary" disabled={busy} onClick={confirm}>Confirm</button><button className="secondary" disabled={busy} onClick={() => startFreshConversation(true)}>Cancel</button></div>
           </div>}
           {busy && <div className="thinking"><span className="spinner" /> {workingLabel}</div>}
           {startingRecording && <div className="thinking"><span className="spinner" /> Starting microphone…</div>}
           <div ref={endRef} />
         </div>
         <form className="composer" onSubmit={event => { event.preventDefault(); void sendText(draft); }}>
-          <input aria-label="Type a reminder request" value={draft} onChange={event => setDraft(event.target.value)} placeholder="Ask for a reminder…" disabled={busy || recording || startingRecording} />
+          <input ref={inputRef} aria-label="Type a reminder request" value={draft} onFocus={scrollToLatest} onClick={scrollToLatest} onChange={event => setDraft(event.target.value)} placeholder="Ask for a reminder…" disabled={busy || recording || startingRecording} />
           <button type="submit" className="send-button" aria-label="Send" disabled={!draft.trim() || busy || startingRecording}><Send size={19} /></button>
           <button type="button" className={`mic-button ${recording ? 'is-recording' : ''} ${startingRecording ? 'is-starting' : ''}`} aria-label={recording ? 'Stop recording' : startingRecording ? 'Cancel microphone startup' : 'Start recording'} onClick={toggleRecording} disabled={busy}><Mic size={23} /></button>
         </form>
@@ -367,7 +427,7 @@ export default function App() {
         <div className="reminder-list">{visible.length ? visible.map(r => {
           const group = reminderGroup(r, Date.now());
           return <article className="reminder-card" key={r.id}><div className="reminder-icon"><Bell size={19} /></div><div className="reminder-body"><h2>{r.title}</h2>{r.repeatUntilDoneMinutes && <span className="chip">Repeats every {r.repeatUntilDoneMinutes} min until Done</span>}
-            <div className="card-actions"><button disabled={busy} onClick={() => { setDraft(`Change my reminder “${r.title}” to `); setView('home'); }}>Edit</button><button className="danger-text" disabled={busy} onClick={() => setDeleteTarget(r)}><Trash2 size={16} /> Delete</button></div>
+            <div className="card-actions"><button disabled={busy} onClick={() => { setDraft(`Change my reminder “${r.title}” to `); setView('home'); }}>Edit</button><button onClick={() => openReminderHistory(r.id)}>Conversation history</button><button className="danger-text" disabled={busy} onClick={() => setDeleteTarget(r)}><Trash2 size={16} /> Delete</button></div>
             <div className="occurrence-list">
               {group.alert && <div className="occurrence-row alert-row"><strong>Alert sent</strong><span>{dateLabel(group.alert.scheduledAt)}</span>{group.alert.nextNudgeAt && <span>Next alert: {dateLabel(group.alert.nextNudgeAt)}</span>}<div className="card-actions"><button disabled={busy} onClick={() => act(r, 'done', group.alert!.occurrenceId)}><Check size={16} /> Done</button><button disabled={busy} onClick={() => act(r, 'snooze', group.alert!.occurrenceId)}><Clock3 size={16} /> Snooze 10 min</button></div></div>}
               {group.retryAt && <div className="occurrence-row"><strong>Retrying delivery</strong><span>{dateLabel(group.retryAt)}</span></div>}
@@ -379,18 +439,20 @@ export default function App() {
       {view === 'history' && <section className="page"><div className="page-heading"><div className="eyebrow">RECENT ACTIVITY</div><h1>History</h1><p>Delivered, completed, and canceled reminders</p></div>
         <div className="history-list">{past.length ? past.map(r => {
           const alert = r.status === 'active' ? reminderGroup(r, Date.now()).alert : null;
-          return <div className="history-item" key={r.id}><div className="history-dot" /><div><strong>{alert ? 'Alert sent' : r.status === 'active' ? 'Finished schedule' : r.status}</strong><span>{r.title}</span>{alert && <div className="history-actions"><button disabled={busy} onClick={() => act(r, 'done', alert.occurrenceId)}>Done</button><button disabled={busy} onClick={() => act(r, 'snooze', alert.occurrenceId)}>Snooze 10 min</button></div>}<button className="history-delete danger-text" disabled={busy} onClick={() => setDeleteTarget(r)}><Trash2 size={14} /> Delete</button></div><time>{dateLabel(r.lastSentAt ?? r.updatedAt)}</time></div>;
+          return <div className="history-item" key={r.id}><div className="history-dot" /><div><strong>{alert ? 'Alert sent' : r.status === 'active' ? 'Finished schedule' : r.status}</strong><span>{r.title}</span>{alert && <div className="history-actions"><button disabled={busy} onClick={() => act(r, 'done', alert.occurrenceId)}>Done</button><button disabled={busy} onClick={() => act(r, 'snooze', alert.occurrenceId)}>Snooze 10 min</button></div>}<button className="history-link" onClick={() => openReminderHistory(r.id)}>Conversation history</button><button className="history-delete danger-text" disabled={busy} onClick={() => setDeleteTarget(r)}><Trash2 size={14} /> Delete</button></div><time>{dateLabel(r.lastSentAt ?? r.updatedAt)}</time></div>;
         }) : <div className="empty-state">No past reminders yet.</div>}</div>
         <h2 className="activity-heading">Recent actions</h2><div className="history-list">{events.length ? events.map(e => <div className="history-item" key={e.id}><div className="history-dot" /><div><strong>{e.action}</strong><span>{reminders.find(r => r.id === e.reminderId)?.title || 'Reminder'}</span></div><time>{dateLabel(e.at)}</time></div>) : <div className="empty-state">Nothing here yet.</div>}</div></section>}
       {view === 'settings' && <section className="page settings-page"><div className="page-heading"><div className="eyebrow">MAKE IT YOURS</div><h1>Settings</h1></div>
         <div className="setting-card"><div><strong>Appearance</strong><p>Follow your phone or choose a look</p></div><div className="segmented">{(['system', 'light', 'dark'] as Theme[]).map(mode => <button className={theme === mode ? 'selected' : ''} key={mode} onClick={() => setTheme(mode)}>{mode === 'light' ? <Sun size={15} /> : mode === 'dark' ? <Moon size={15} /> : null}{mode}</button>)}</div></div>
         <div className="setting-card"><div><strong>Notifications</strong><p>Allow Firefox to send reminders to your phone</p></div><button className="secondary" onClick={() => enablePush(setNotice).then(() => setNotice('Test notification sent.')).catch(error => setNotice(error.message))}>Enable & test</button></div>
-        <div className="setting-card"><div><strong>Spoken replies</strong><p>Read responses aloud after voice or text requests</p></div><label className="switch"><input type="checkbox" checked={voiceReply} onChange={event => setVoiceReply(event.target.checked)} /><span /></label></div>
-        <div className="setting-card"><div><strong>Conversation history</strong><p>Kept until you delete it. Raw audio is not saved.</p></div><button className="danger-text" disabled={busy} onClick={clearConversation}><Trash2 size={17} /> Delete conversation</button></div>
+        <div className="setting-card"><div><strong>Spoken replies</strong><p>Read responses aloud only after spoken requests</p></div><label className="switch"><input type="checkbox" checked={voiceReply} onChange={event => setVoiceReply(event.target.checked)} /><span /></label></div>
         <div className="setting-card"><div><strong>Account</strong><p>{user.email}</p></div><button className="secondary" onClick={() => signOutUser().catch(error => setNotice(error.message))}>Sign out</button></div>
       </section>}
     </main>
     {deleteTarget && <div className="dialog-backdrop"><div className="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title"><h2 id="delete-title">Delete reminder?</h2><p>“{deleteTarget.title}” and its reminder records will be permanently deleted. This cannot be undone.</p><div className="dialog-actions"><button className="secondary" disabled={busy} onClick={() => setDeleteTarget(null)}>Keep reminder</button><button className="delete-confirm" disabled={busy} onClick={removeReminder}>Delete permanently</button></div></div></div>}
+    {detailReminderId && <div className="dialog-backdrop"><div className="conversation-dialog" role="dialog" aria-modal="true" aria-labelledby="conversation-title"><div className="dialog-heading"><h2 id="conversation-title">{reminders.find(r => r.id === detailReminderId)?.title ?? 'Reminder'} conversations</h2><button className="icon-button" aria-label="Close conversation history" onClick={() => { setDetailReminderId(null); setSelectedSessionId(null); setDeleteSessionId(null); }}><X size={19} /></button></div>
+      {sessionsLoading ? <p>Loading conversations…</p> : savedConversations.length ? <><div className="session-tabs">{savedConversations.map(session => <button className={selectedSessionId === session.id ? 'selected' : ''} key={session.id} onClick={() => { setSavedTurns([]); setSelectedSessionId(session.id); setDeleteSessionId(null); }}>{dateLabel(session.linkedAt)}</button>)}</div><div className="saved-turns">{savedTurns.map(turn => <div className="turn" key={turn.id}><div className="bubble user-bubble">{turn.user}</div><div className="bubble assistant-bubble">{turn.assistant}</div></div>)}</div>{selectedSessionId && <div className="session-delete">{deleteSessionId === selectedSessionId ? <><span>Delete this conversation permanently?</span><button className="secondary" onClick={() => setDeleteSessionId(null)}>Keep</button><button className="delete-confirm" disabled={busy} onClick={removeSavedConversation}>Delete</button></> : <button className="danger-text" onClick={() => setDeleteSessionId(selectedSessionId)}><Trash2 size={15} /> Delete this conversation</button>}</div>}</> : <p>No saved conversations for this reminder.</p>}
+    </div></div>}
     {notice && <div className="toast" role="status"><span>{notice}</span><button aria-label="Dismiss notice" onClick={() => setNotice('')}><X size={16} /></button></div>}
     <nav className="bottom-nav" aria-label="Main navigation">
       <button className={view === 'home' ? 'active' : ''} onClick={() => setView('home')}><Mic size={20} /><span>Ask</span></button>

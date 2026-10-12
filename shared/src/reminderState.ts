@@ -2,6 +2,14 @@ import { nextOccurrence, type ReminderRecord } from './schedule';
 
 export type OccurrenceAction = 'done' | 'dismiss' | 'snooze';
 
+export function currentAlertId(reminder: ReminderRecord, now: number): string | undefined {
+  const scheduledAt = reminder.currentScheduledAt ??
+    (reminder.lastSentAt != null && reminder.lastScheduledAt != null &&
+      now >= reminder.lastSentAt && now - reminder.lastSentAt < 24 * 60 * 60_000
+      ? reminder.lastScheduledAt : null);
+  return scheduledAt == null ? undefined : `${reminder.id}_${scheduledAt}`;
+}
+
 export function applyReminderAction(
   reminder: ReminderRecord,
   action: OccurrenceAction,

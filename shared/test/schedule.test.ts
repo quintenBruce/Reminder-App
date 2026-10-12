@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nextOccurrence, previewOccurrences, type ReminderRecord } from '../src/schedule';
-import { afterDelivery, applyReminderAction } from '../src/reminderState';
+import { afterDelivery, applyReminderAction, currentAlertId } from '../src/reminderState';
 
 const ms = (value: string) => Date.parse(value);
 const iso = (value: number | null) => value === null ? null : new Date(value).toISOString();
@@ -81,6 +81,16 @@ describe('reminder actions and delivery', () => {
     const result = applyReminderAction(r, 'done', prior + 60_000, null, `r1_${prior}`);
     expect(result.nextDueAt).toBeUndefined();
     expect(result.status).toBeUndefined();
+  });
+
+  it('Upcoming actions target a recent alert but not an old recurrence', () => {
+    const prior = ms('2026-10-11T09:00:00-05:00');
+    const next = ms('2026-10-12T09:00:00-05:00');
+    const r = reminder({ lastScheduledAt: prior, lastSentAt: prior, nextDueAt: next });
+    expect(currentAlertId(r, prior + 60_000)).toBe(`r1_${prior}`);
+    expect(currentAlertId(r, prior + 25 * 60 * 60_000)).toBeUndefined();
+    const done = applyReminderAction(r, 'done', prior + 60_000, null, currentAlertId(r, prior + 60_000));
+    expect(done.nextDueAt).toBeUndefined();
   });
 
   it('backs off failed push attempts and keeps the original due instant', () => {

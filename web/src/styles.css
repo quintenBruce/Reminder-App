@@ -86,10 +86,6 @@ h1, h2, .brand, .eyebrow { font-family: Manrope, system-ui, sans-serif; }
 .mic-button.is-starting { background: #a56c2c; animation: pulse 1s infinite alternate; }
 @keyframes pulse { to { box-shadow: 0 0 0 8px rgba(212,81,102,.17); } }
 .composer-hint { text-align: center; color: var(--muted); font-size: 11px; margin: 12px 0 15px; }
-.upcoming-peek { display: flex; align-items: center; gap: 9px; width: 100%; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); color: var(--text); padding: 13px 15px; text-align: left; font-size: 12px; }
-.upcoming-peek svg { color: var(--primary); flex: none; }
-.upcoming-peek span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.upcoming-peek strong { color: var(--muted); font-weight: 600; white-space: nowrap; }
 .bottom-nav { display: flex; position: fixed; z-index: 5; bottom: 0; left: 50%; transform: translateX(-50%); width: min(900px, 100%); height: calc(75px + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -5px 22px rgba(20,24,60,.03); }
 .bottom-nav button { flex: 1; border: 0; color: var(--muted); background: transparent; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; }
 .bottom-nav button.active { color: var(--primary); }
@@ -108,6 +104,7 @@ h1, h2, .brand, .eyebrow { font-family: Manrope, system-ui, sans-serif; }
 .card-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }
 .card-actions button { display: flex; align-items: center; gap: 4px; background: var(--surface-soft); color: var(--text); border: 0; border-radius: 10px; padding: 8px 10px; font-size: 11px; font-weight: 700; }
 .card-actions button:hover { color: var(--primary); }
+.reminder-body .action-help { margin: 9px 0 0; font-size: 11px; }
 .empty-state { text-align: center; border: 1px dashed var(--line); color: var(--muted); border-radius: 18px; padding: 42px 18px; font-size: 13px; }
 .history-list { border: 1px solid var(--line); background: var(--surface); border-radius: 19px; overflow: hidden; }
 .activity-heading { font-size: 16px; margin: 28px 0 13px; }
@@ -144,5 +141,5 @@ h1, h2, .brand, .eyebrow { font-family: Manrope, system-ui, sans-serif; }
   .hero { padding-top: 48px; }.hero h1 { font-size: 32px; }.hero p { font-size: 13px; }
   .page { padding-top: 35px; }.page-heading h1 { font-size: 34px; }
   .setting-card { align-items: flex-start; flex-direction: column; }.setting-card .secondary { align-self: flex-start; }
-  .composer { bottom: 85px; }.upcoming-peek strong { display: none; }
+  .composer { bottom: 85px; }
 }

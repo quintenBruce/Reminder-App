@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, getRedirectResult, type User } from 'firebase/auth';
 import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
-import { Bell, Check, ChevronRight, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
+import { Bell, Check, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
 import type { ReminderRecord } from '../../shared/src/schedule';
-import { auth, callable, database, enablePush, needsPushRegistration, signIn, signOutUser } from './firebase';
+import { currentAlertId } from '../../shared/src/reminderState';
+import { auth, callable, closeReminderNotifications, database, enablePush, needsPushRegistration, signIn, signOutUser } from './firebase';
 import { microphoneErrorMessage, startVoiceRecording, withTimeout, type VoiceRecording } from './voice';
 
 type View = 'home' | 'upcoming' | 'history' | 'settings';
@@ -73,7 +74,6 @@ export default function App() {
   const recorderRef = useRef<VoiceRecording | null>(null);
   const recordingStartRef = useRef(0);
   const recordingTimeoutRef = useRef<number | null>(null);
-  const refreshedPushUidRef = useRef<string | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => () => {
@@ -117,10 +117,58 @@ export default function App() {
   }, [user, conversationId]);
   useEffect(() => {
     if (!user || !user.emailVerified || !user.providerData.some(provider => provider.providerId === 'google.com') ||
-        !('Notification' in window) || Notification.permission !== 'granted' || refreshedPushUidRef.current === user.uid) return;
-    refreshedPushUidRef.current = user.uid;
-    void enablePush(setNotice, false).catch(error =>
-      setNotice(`Notifications need attention: ${error instanceof Error ? error.message : 'Registration failed.'}`));
+        !('Notification' in window)) return;
+    const uid = user.uid;
+    let stopped = false;
+    let running = false;
+    let failures = 0;
+    let lastAttempt = 0;
+    let retryTimer: number | null = null;
+    const sync = async (force = false) => {
+      if (stopped || running || document.visibilityState === 'hidden' || !navigator.onLine ||
+          Notification.permission !== 'granted' || auth.currentUser?.uid !== uid ||
+          (!force && !needsPushRegistration(uid))) return;
+      const sinceLastAttempt = Date.now() - lastAttempt;
+      if (sinceLastAttempt < 60_000) {
+        if (force && retryTimer === null) retryTimer = window.setTimeout(() => {
+          retryTimer = null;
+          void sync(true);
+        }, 60_000 - sinceLastAttempt);
+        return;
+      }
+      running = true;
+      lastAttempt = Date.now();
+      try {
+        await enablePush(setNotice, false);
+        if (stopped) return;
+        if (failures) setNotice('Notifications reconnected.');
+        failures = 0;
+        if (retryTimer !== null) window.clearTimeout(retryTimer);
+        retryTimer = null;
+      } catch (error) {
+        if (stopped) return;
+        if (!failures) setNotice(`Notifications need attention: ${error instanceof Error ? error.message : 'Registration failed.'}`);
+        failures++;
+        retryTimer = window.setTimeout(() => { void sync(true); }, Math.min(15 * 60_000, 60_000 * 2 ** Math.min(failures - 1, 4)));
+      } finally { running = false; }
+    };
+    void sync(true);
+    const stopDevices = onSnapshot(query(collection(database, 'users', uid, 'devices'), limit(1)), snapshot => {
+      if (snapshot.empty) void sync(true);
+    });
+    const onReturn = () => { if (document.visibilityState === 'visible') void sync(true); };
+    const onOnline = () => { void sync(true); };
+    document.addEventListener('visibilitychange', onReturn);
+    window.addEventListener('online', onOnline);
+    const interval = window.setInterval(() => { void sync(); }, 5 * 60_000);
+    return () => {
+      stopped = true;
+      stopDevices();
+      document.removeEventListener('visibilitychange', onReturn);
+      window.removeEventListener('online', onOnline);
+      window.clearInterval(interval);
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
   }, [user]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns.length, proposal]);
   useEffect(() => {
@@ -227,11 +275,13 @@ export default function App() {
     }
   }
 
-  async function act(reminderId: string, action: 'done' | 'dismiss' | 'snooze') {
+  async function act(reminder: ReminderRecord, action: 'done' | 'dismiss' | 'snooze') {
     setBusy(true);
     try {
-      await call.act({ reminderId, action, snoozeMinutes: action === 'snooze' ? 10 : undefined, requestId: crypto.randomUUID() });
-      setNotice(action === 'snooze' ? 'Snoozed 10 minutes.' : action === 'dismiss' ? 'Alert hidden. Future nudges remain active.' : 'Marked done.');
+      await call.act({ reminderId: reminder.id, action, snoozeMinutes: action === 'snooze' ? 10 : undefined,
+        requestId: crypto.randomUUID(), occurrenceId: currentAlertId(reminder, Date.now()) });
+      await closeReminderNotifications(reminder.id).catch(() => undefined);
+      setNotice(action === 'snooze' ? 'Snoozed 10 minutes.' : action === 'dismiss' ? 'Alert hidden. Future reminders remain scheduled.' : 'Marked done.');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Action failed.'); }
     finally { setBusy(false); }
   }
@@ -283,12 +333,11 @@ export default function App() {
           <button type="button" className={`mic-button ${recording ? 'is-recording' : ''} ${startingRecording ? 'is-starting' : ''}`} aria-label={recording ? 'Stop recording' : startingRecording ? 'Cancel microphone startup' : 'Start recording'} onClick={toggleRecording} disabled={busy}><Mic size={23} /></button>
         </form>
         <div className="composer-hint">{recording ? `Listening${recordingMode === 'browser' ? ' (browser recorder)' : ''}… tap the microphone to stop` : startingRecording ? 'If Firefox asks, allow microphone access · Tap again to cancel' : 'Tap the microphone to speak · Changes need your confirmation'}</div>
-        {active.length > 0 && <button className="upcoming-peek" onClick={() => setView('upcoming')}><Clock3 size={17} /><span>Next: {active[0].title}</span><strong>{dateLabel(active[0].nextDueAt)}</strong><ChevronRight size={17} /></button>}
       </section>}
       {view === 'upcoming' && <section className="page"><div className="page-heading"><div className="eyebrow">STAY ON TRACK</div><h1>Upcoming</h1><p>{active.length} active reminder{active.length === 1 ? '' : 's'}</p></div>
         <input className="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search reminders" aria-label="Search reminders" />
         <div className="reminder-list">{visible.length ? visible.map(r => <article className="reminder-card" key={r.id}><div className="reminder-icon"><Bell size={19} /></div><div className="reminder-body"><h2>{r.title}</h2><p>{r.currentScheduledAt && r.currentScheduledAt < Date.now() ? `Overdue since ${dateLabel(r.currentScheduledAt)} · Next attempt ${dateLabel(r.nextDueAt)}` : dateLabel(r.nextDueAt)}</p>{r.repeatUntilDoneMinutes && <span className="chip">Repeats every {r.repeatUntilDoneMinutes} min until Done</span>}
-          <div className="card-actions"><button disabled={busy} onClick={() => act(r.id, 'done')}><Check size={16} /> Done</button><button disabled={busy} onClick={() => act(r.id, 'snooze')}><Clock3 size={16} /> Snooze</button><button disabled={busy} onClick={() => act(r.id, 'dismiss')}><X size={16} /> Dismiss</button><button onClick={() => { setDraft(`Change my reminder “${r.title}” to `); setView('home'); }}>Edit</button></div></div></article>) : <div className="empty-state">No reminders found. Tap the microphone to make one.</div>}</div>
+          <div className="card-actions"><button disabled={busy} onClick={() => act(r, 'done')}><Check size={16} /> Done</button><button disabled={busy} onClick={() => act(r, 'snooze')}><Clock3 size={16} /> Snooze</button>{r.lastSentAt != null && Date.now() >= r.lastSentAt && Date.now() - r.lastSentAt < 24 * 60 * 60_000 && <button disabled={busy} onClick={() => act(r, 'dismiss')}><X size={16} /> Dismiss alert</button>}<button onClick={() => { setDraft(`Change my reminder “${r.title}” to `); setView('home'); }}>Edit</button></div>{r.repeatUntilDoneMinutes && <p className="action-help">Dismiss closes this alert; Done stops its repeat nudges.</p>}</div></article>) : <div className="empty-state">No reminders found. Tap the microphone to make one.</div>}</div>
       </section>}
       {view === 'history' && <section className="page"><div className="page-heading"><div className="eyebrow">RECENT ACTIVITY</div><h1>History</h1><p>Your completed and canceled reminders</p></div>
         <div className="history-list">{reminders.filter(r => r.status !== 'active').length ? reminders.filter(r => r.status !== 'active').map(r => <div className="history-item" key={r.id}><div className="history-dot" /><div><strong>{r.status}</strong><span>{r.title}</span></div><time>{dateLabel(r.updatedAt)}</time></div>) : <div className="empty-state">No completed or canceled reminders yet.</div>}</div>

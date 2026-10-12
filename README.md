@@ -18,7 +18,7 @@ The user authorized a build for this project. The committed pnpm lockfile suppor
 
 ## Device acceptance
 
-Use the actual Samsung phone with current Firefox for Android. Record the exact model and version numbers during testing. Install the PWA from Firefox and grant microphone access. Notification access is requested when confirming the first reminder; **Enable & test** in Settings can retry and test delivery. Then check a five-minute reminder with Firefox foregrounded, backgrounded, closed, and after a phone restart. Check Done, Dismiss, Snooze, recurrence, timezone travel, and offline recovery. If FCM registration or background delivery fails on that device, add a standards-based Web Push transport while keeping the PWA interface.
+Use the actual Samsung phone with current Firefox for Android. Record the exact model and version numbers during testing. Install the PWA from Firefox and grant microphone access. Notification access is requested when confirming the first reminder; **Enable & test** in Settings sends a real push for manual diagnosis. With permission granted, the app refreshes registration when opened, when brought back into view, after network recovery, and when its server device record disappears. Failed refreshes retry with backoff. Then check a five-minute reminder with Firefox foregrounded, backgrounded, closed, and after a phone restart. Check Done, Dismiss alert, Snooze, recurrence, timezone travel, and offline recovery. If background delivery remains unreliable on that device, a native Android notification component is the next stronger option.
 
 ## Delivery diagnostics
 
@@ -27,3 +27,5 @@ Each send attempt is recorded in Firestore at `users/{uid}/occurrences/{reminder
 Backend Cloud Logs use structured `operation.started`, `operation.stage`, `operation.succeeded`, and `operation.failed` entries for callable functions. Each has an `operationId`, `operation`, `uid`, and elapsed time; stages identify validation, quota, AI, persistence, and device registration progress. `dispatchDue` logs a claim and delivery result per occurrence, then a run summary when it found due reminders. Empty minute scans produce no app log. Logs omit reminder text, transcripts, audio, push tokens, API keys, exception messages, and stacks. See [the log queries](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md#6-view-backend-logs).
 
 Delivery is best effort. Chrome is not required. A notification action opens the authenticated app and applies the requested action; the service worker does not hold credentials. Text conversations remain until deleted. Raw audio is sent for transcription and is not stored in Firestore.
+
+**Dismiss alert** closes a currently displayed notification and leaves future nudges scheduled. **Done** finishes the current occurrence and stops its repeat-until-Done nudges; recurring reminders keep their next regular occurrence. Upcoming only offers Dismiss alert for a recently sent or active alert.

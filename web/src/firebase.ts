@@ -4,6 +4,7 @@ import { getFirestore } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { deleteToken, getMessaging, getToken, isSupported, onMessage } from 'firebase/messaging';
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
+import { registrationNeedsRefresh, type SavedPushRegistration } from './pushRegistration';
 
 const config = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -71,8 +72,17 @@ export async function enablePush(onForeground: (message: string) => void, test =
     serviceWorkerRegistration: registration,
   });
   if (!token) throw new Error('Firefox did not return a push token.');
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error('Sign in before enabling notifications.');
   await callable<{ token: string; test: boolean }, { registered: boolean }>('registerDevice')({ token, test });
-  localStorage.setItem('remind-push-registration', JSON.stringify({ uid: auth.currentUser?.uid, token }));
+  if (auth.currentUser?.uid !== uid) throw new Error('Account changed while enabling notifications.');
+  let oldRegistration: SavedPushRegistration = null;
+  try { oldRegistration = JSON.parse(localStorage.getItem('remind-push-registration') || 'null') as SavedPushRegistration; }
+  catch { /* Replace malformed local state below. */ }
+  localStorage.setItem('remind-push-registration', JSON.stringify({ uid, token, checkedAt: Date.now() }));
+  if (oldRegistration?.uid === uid && oldRegistration.token && oldRegistration.token !== token) {
+    await callable<{ token: string }, { unregistered: boolean }>('unregisterDevice')({ token: oldRegistration.token }).catch(() => undefined);
+  }
   stopForegroundMessages?.();
   stopForegroundMessages = onMessage(messaging, payload => onForeground(payload.data?.title || 'Reminder received'));
 }
@@ -80,7 +90,15 @@ export async function enablePush(onForeground: (message: string) => void, test =
 export function needsPushRegistration(uid: string) {
   if (!('Notification' in window) || Notification.permission === 'denied') return false;
   try {
-    const saved = JSON.parse(localStorage.getItem('remind-push-registration') || 'null') as { uid?: string; token?: string } | null;
-    return saved?.uid !== uid || !saved.token;
+    const saved = JSON.parse(localStorage.getItem('remind-push-registration') || 'null') as SavedPushRegistration;
+    return registrationNeedsRefresh(saved, uid);
   } catch { return true; }
+}
+
+export async function closeReminderNotifications(reminderId: string) {
+  if (!('serviceWorker' in navigator)) return;
+  const registration = await navigator.serviceWorker.getRegistration('/');
+  if (!registration) return;
+  const notifications = await registration.getNotifications();
+  notifications.filter(notification => notification.data?.reminderId === reminderId).forEach(notification => notification.close());
 }

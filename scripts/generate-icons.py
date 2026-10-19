@@ -1,26 +1,35 @@
-"""Generate Remind's PNG app and notification icons from its simple mic mark.
+"""Resize the generated app icon and build its monochrome notification badge.
 
-Requires Pillow. The coordinates match web/public/icon.svg's 192-pixel canvas.
+Requires Pillow. Keep assets/remind-icon-source.png as the source for all launcher sizes.
 """
 
 from pathlib import Path
 from PIL import Image, ImageDraw
 
 PUBLIC = Path(__file__).resolve().parents[1] / "web" / "public"
-PURPLE = (76, 92, 197, 255)
+SOURCE = PUBLIC.parents[1] / "assets" / "remind-icon-source.png"
 WHITE = (255, 255, 255, 255)
 
 
-def render(size: int, badge: bool = False) -> Image.Image:
+with Image.open(SOURCE) as source:
+    if source.width != source.height:
+        raise ValueError("The app icon source must be square.")
+    for pixels in (48, 192, 512):
+        source.convert("RGB").resize((pixels, pixels), Image.Resampling.LANCZOS).save(
+            PUBLIC / f"icon-{pixels}.png", optimize=True
+        )
+
+
+def render_badge(size: int) -> Image.Image:
     scale = max(4, (size * 4 + 191) // 192)
     canvas = 192 * scale
-    image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0) if badge else PURPLE)
+    image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
     def box(coords):
         return tuple(round(value * scale) for value in coords)
 
-    # Capsule, receiver arc, stem, and base: a readable silhouette at small sizes.
+    # Notification badges are monochrome, so keep the microphone silhouette.
     draw.rounded_rectangle(box((83, 43, 109, 111)), radius=13 * scale, fill=WHITE)
     draw.arc(box((57, 59, 135, 137)), start=0, end=180, fill=WHITE, width=14 * scale)
     draw.ellipse(box((50, 91, 64, 105)), fill=WHITE)
@@ -30,6 +39,4 @@ def render(size: int, badge: bool = False) -> Image.Image:
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
-for pixels in (48, 192, 512):
-    render(pixels).save(PUBLIC / f"icon-{pixels}.png", optimize=True)
-render(96, badge=True).save(PUBLIC / "badge-96.png", optimize=True)
+render_badge(96).save(PUBLIC / "badge-96.png", optimize=True)

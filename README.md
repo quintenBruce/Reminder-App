@@ -7,8 +7,10 @@ Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [TECHNICAL_I
 - Material 3 inspired React/TypeScript PWA with system light/dark mode, a sticky header, a prominent push-to-talk control, spoken readbacks for voice requests, text input, confirmation cards, upcoming reminders, history, and settings.
 - Firebase Google sign-in for any verified Google account; each account has private Firestore data and server-only writes.
 - Callable functions for recorded-audio transcription, structured conversational proposals, explicit confirmation, Done/Snooze, permanent reminder deletion, device registration and removal, and conversation deletion. Legacy Dismiss calls remain supported for older clients. AI usage has per-account and app-wide daily limits.
-- Shared recurrence rules for one-time, elapsed intervals, and daily/weekly/monthly/yearly wall-clock schedules, including DST resolution and next-five previews.
+- Shared recurrence rules for one-time, elapsed intervals, and daily/weekly/monthly/yearly wall-clock schedules, including numbered or last weekdays of a month and weekly days after a monthly cutoff, DST resolution, and next-five previews.
 - One scheduled dispatcher per minute and a data-only FCM push worker with Done and Snooze notification actions where Firefox supports them. Duplicate reminder descriptions are omitted from push notifications.
+
+For example, “remind me every 3rd Sunday of the month at noon” fires on the third Sunday in each month. “Starting the 10th of every month, remind me every Friday at noon to do QuickBooks” fires on Fridays dated the 10th or later, resetting that cutoff each month. The app asks for a time when one is missing and reads the interpreted schedule back for confirmation.
 
 ## Verification and deployment
 

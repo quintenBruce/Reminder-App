@@ -27,6 +27,7 @@ type ModelDecision = {
   kind: ScheduleRule['kind'] | null; at: string | null; startAt: string | null;
   everyMinutes: number | null; timeZone: string | null; hour: number | null;
   minute: number | null; daysOfWeek: number[]; dayOfMonth: number | null;
+  weekOfMonth: number | null; startDayOfMonth: number | null;
   month: number | null; endAt: string | null; repeatUntilDoneMinutes: number | null;
   snoozeMinutes: number | null; clearRepeatUntilDone: boolean; message: string;
 };
@@ -44,17 +45,18 @@ const decisionSchema = {
   properties: {
     action: { type: 'string', enum: ['create', 'edit', 'cancel', 'delete', 'done', 'snooze', 'list', 'clarify'] },
     targetId: { type: ['string', 'null'] }, title: { type: ['string', 'null'] }, notes: { type: ['string', 'null'] },
-    kind: { type: ['string', 'null'], enum: ['once', 'interval', 'daily', 'weekly', 'monthly', 'yearly', null] },
+    kind: { type: ['string', 'null'], enum: ['once', 'interval', 'daily', 'weekly', 'monthly', 'monthly_weekday', 'monthly_weekly', 'yearly', null] },
     at: { type: ['string', 'null'] }, startAt: { type: ['string', 'null'] },
     everyMinutes: { type: ['integer', 'null'] }, timeZone: { type: ['string', 'null'] },
     hour: { type: ['integer', 'null'] }, minute: { type: ['integer', 'null'] },
     daysOfWeek: { type: 'array', items: { type: 'integer' } }, dayOfMonth: { type: ['integer', 'null'] },
+    weekOfMonth: { type: ['integer', 'null'] }, startDayOfMonth: { type: ['integer', 'null'] },
     month: { type: ['integer', 'null'] }, endAt: { type: ['string', 'null'] },
     repeatUntilDoneMinutes: { type: ['integer', 'null'] }, snoozeMinutes: { type: ['integer', 'null'] },
     clearRepeatUntilDone: { type: 'boolean' }, message: { type: 'string' },
   },
   required: ['action', 'targetId', 'title', 'notes', 'kind', 'at', 'startAt', 'everyMinutes', 'timeZone',
-    'hour', 'minute', 'daysOfWeek', 'dayOfMonth', 'month', 'endAt', 'repeatUntilDoneMinutes', 'snoozeMinutes', 'clearRepeatUntilDone', 'message'],
+    'hour', 'minute', 'daysOfWeek', 'dayOfMonth', 'weekOfMonth', 'startDayOfMonth', 'month', 'endAt', 'repeatUntilDoneMinutes', 'snoozeMinutes', 'clearRepeatUntilDone', 'message'],
 } as const;
 
 function requireGoogleUser(request: CallableRequest): string {
@@ -116,8 +118,10 @@ function checkedRule(d: ModelDecision, current?: ReminderRecord, pending?: Propo
   } else {
     rule = { kind: d.kind, startAt: textValue(d.startAt, 50), timeZone: textValue(d.timeZone, 80),
       hour: d.hour ?? -1, minute: d.minute ?? -1,
-      ...(d.kind === 'weekly' ? { daysOfWeek: d.daysOfWeek } : {}),
+      ...(['weekly', 'monthly_weekday', 'monthly_weekly'].includes(d.kind) ? { daysOfWeek: d.daysOfWeek } : {}),
       ...(d.kind === 'monthly' || d.kind === 'yearly' ? { dayOfMonth: d.dayOfMonth ?? 0 } : {}),
+      ...(d.kind === 'monthly_weekday' ? { weekOfMonth: d.weekOfMonth ?? 0 } : {}),
+      ...(d.kind === 'monthly_weekly' ? { startDayOfMonth: d.startDayOfMonth ?? 0 } : {}),
       ...(d.kind === 'yearly' ? { month: d.month ?? 0 } : {}),
       ...(d.endAt ? { endAt: d.endAt } : {}) };
   }
@@ -136,6 +140,8 @@ function summarize(rule: ScheduleRule, dates: number[], deviceZone: string): str
   const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const frequency = rule.kind === 'weekly' ? `weekly on ${rule.daysOfWeek!.map(day => weekdays[day - 1]).join(', ')}`
     : rule.kind === 'monthly' ? `monthly on day ${rule.dayOfMonth} (or the last day of shorter months)`
+      : rule.kind === 'monthly_weekday' ? `monthly on the ${rule.weekOfMonth === -1 ? 'last' : `${rule.weekOfMonth}${['st', 'nd', 'rd'][rule.weekOfMonth! - 1] ?? 'th'}`} ${weekdays[rule.daysOfWeek![0] - 1]}`
+        : rule.kind === 'monthly_weekly' ? `every ${rule.daysOfWeek!.map(day => weekdays[day - 1]).join(', ')} on or after day ${rule.startDayOfMonth} of each month`
       : rule.kind === 'yearly' ? `yearly on month ${rule.month}, day ${rule.dayOfMonth} (or the last day of shorter months)` : 'daily';
   return `${frequency} at ${localTime} in ${rule.timeZone}, starting ${first}${ending}`;
 }
@@ -209,7 +215,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     model, store: false, reasoning: { effort: 'low' },
     max_output_tokens: 2000,
     text: { format: { type: 'json_schema', name: 'reminder_decision', strict: true, schema: decisionSchema } },
-    instructions: `You interpret personal reminder requests. Current instant: ${new Date().toISOString()}. Device IANA zone: ${zone}. Resolve references only to candidate IDs. If ambiguous or a time is missing, clarify. For create/edit return a complete schedule using an ISO offset instant in at/startAt. For a wall-clock recurrence choose an IANA timeZone and local hour/minute. Weekly days use 1=Monday through 7=Sunday. A request like "every 5 minutes until done" is a one-time occurrence with repeatUntilDoneMinutes=5, not a perpetual interval rule. For an edit, provide the entire replacement schedule when changing timing; otherwise kind=null preserves it. Use clearRepeatUntilDone=true only if the user removes those nudges. If the user revises a pending creation, return action=create with full revised fields. Use delete for delete/remove/erase requests: it permanently erases the reminder and its related records after confirmation. Cancel only stops scheduling and retains history. Never offer dismiss. Keep responses short. Never invent a target ID.`,
+    instructions: `You interpret personal reminder requests. Current instant: ${new Date().toISOString()}. Device IANA zone: ${zone}. Resolve references only to candidate IDs. If ambiguous or a time is missing, clarify. For create/edit return a complete schedule using an ISO offset instant in at/startAt. For a wall-clock recurrence choose an IANA timeZone and local hour/minute. Weekdays use 1=Monday through 7=Sunday. "Every 3rd Sunday of the month" uses kind=monthly_weekday, daysOfWeek=[7], weekOfMonth=3. For the last weekday of a month use weekOfMonth=-1; a fifth weekday occurs only in months that have one. "Starting the 10th of every month, every Friday" uses kind=monthly_weekly, daysOfWeek=[5], startDayOfMonth=10; the cutoff resets each month. Use startAt for the earliest allowed occurrence, not for that repeating monthly cutoff. A request like "every 5 minutes until done" is a one-time occurrence with repeatUntilDoneMinutes=5, not a perpetual interval rule. For an edit, provide the entire replacement schedule when changing timing; otherwise kind=null preserves it. Use clearRepeatUntilDone=true only if the user removes those nudges. If the user revises a pending creation, return action=create with full revised fields. Use delete for delete/remove/erase requests: it permanently erases the reminder and its related records after confirmation. Cancel only stops scheduling and retains history. Never offer dismiss. Keep responses short. Never invent a target ID.`,
     input: JSON.stringify({ utterance, history, pendingProposal: pending ? { action: pending.action, targetId: pending.targetId, title: pending.title, notes: pending.notes, rule: pending.rule, repeatUntilDoneMinutes: pending.repeatUntilDoneMinutes, snoozeMinutes: pending.snoozeMinutes } : null,
       candidates: candidates.map(r => ({ id: r.id, title: r.title, status: r.status, rule: r.rule, repeatUntilDoneMinutes: r.repeatUntilDoneMinutes, nextDueAt: r.nextDueAt })) }),
   });

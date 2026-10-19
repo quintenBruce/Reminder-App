@@ -50,6 +50,45 @@ describe('deterministic recurrence', () => {
     ]);
   });
 
+  it('schedules the third Sunday of each month at the local time across DST', () => {
+    const rule = { kind: 'monthly_weekday' as const, startAt: '2026-01-01T00:00:00-06:00',
+      timeZone: 'America/Chicago', hour: 12, minute: 0, daysOfWeek: [7], weekOfMonth: 3 };
+    expect(previewOccurrences(rule, ms('2026-01-01T00:00:00-06:00'), 4).map(iso)).toEqual([
+      '2026-01-18T18:00:00.000Z', '2026-02-15T18:00:00.000Z',
+      '2026-03-15T17:00:00.000Z', '2026-04-19T17:00:00.000Z',
+    ]);
+  });
+
+  it('uses the last weekday and skips months without a fifth one', () => {
+    const base = { kind: 'monthly_weekday' as const, startAt: '2026-02-01T00:00:00-06:00',
+      timeZone: 'America/Chicago', hour: 9, minute: 0, daysOfWeek: [1] };
+    expect(iso(nextOccurrence({ ...base, weekOfMonth: -1 }, ms('2026-02-01T00:00:00-06:00'))))
+      .toBe('2026-02-23T15:00:00.000Z');
+    expect(iso(nextOccurrence({ ...base, weekOfMonth: 5 }, ms('2026-02-01T00:00:00-06:00'))))
+      .toBe('2026-03-30T14:00:00.000Z');
+  });
+
+  it('restarts a Friday-after-the-10th window each month', () => {
+    const rule = { kind: 'monthly_weekly' as const, startAt: '2026-01-01T00:00:00-06:00',
+      timeZone: 'America/Chicago', hour: 12, minute: 0, daysOfWeek: [5], startDayOfMonth: 10 };
+    expect(previewOccurrences(rule, ms('2026-01-01T00:00:00-06:00'), 5).map(iso)).toEqual([
+      '2026-01-16T18:00:00.000Z', '2026-01-23T18:00:00.000Z',
+      '2026-01-30T18:00:00.000Z', '2026-02-13T18:00:00.000Z',
+      '2026-02-20T18:00:00.000Z',
+    ]);
+    expect(iso(nextOccurrence(rule, ms('2026-03-06T12:00:00-06:00'))))
+      .toBe('2026-03-13T17:00:00.000Z');
+    expect(iso(nextOccurrence(rule, ms('2026-04-09T12:00:00-05:00'))))
+      .toBe('2026-04-10T17:00:00.000Z');
+  });
+
+  it('rejects invalid monthly weekday patterns', () => {
+    const base = { startAt: '2026-01-01T00:00:00-06:00', timeZone: 'America/Chicago', hour: 12, minute: 0 };
+    expect(() => nextOccurrence({ ...base, kind: 'monthly_weekday', daysOfWeek: [7, 1], weekOfMonth: 3 }, 0)).toThrow();
+    expect(() => nextOccurrence({ ...base, kind: 'monthly_weekday', daysOfWeek: [7], weekOfMonth: 0 }, 0)).toThrow();
+    expect(() => nextOccurrence({ ...base, kind: 'monthly_weekly', daysOfWeek: [5], startDayOfMonth: 32 }, 0)).toThrow();
+  });
+
   it('rejects intervals shorter than five minutes', () => {
     expect(() => nextOccurrence({ kind: 'interval', startAt: '2026-01-01T00:00:00Z', everyMinutes: 4 }, 0)).toThrow();
   });

@@ -4,7 +4,7 @@ import { getFirestore } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { deleteToken, getMessaging, getToken, isSupported, onMessage } from 'firebase/messaging';
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
-import { registrationNeedsRefresh, type SavedPushRegistration } from './pushRegistration';
+import { registerPushWithRecovery, registrationNeedsRefresh, type SavedPushRegistration } from './pushRegistration';
 
 const config = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -67,14 +67,24 @@ export async function enablePush(onForeground: (message: string) => void, test =
   if (!(await isSupported())) throw new Error('Push is unavailable in this browser. In-app reminders still work.');
   const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
   const messaging = getMessaging(app);
-  const token = await getToken(messaging, {
-    vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
-    serviceWorkerRegistration: registration,
-  });
-  if (!token) throw new Error('Firefox did not return a push token.');
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error('Sign in before enabling notifications.');
-  await callable<{ token: string; test: boolean }, { registered: boolean }>('registerDevice')({ token, test });
+  const registerDevice = callable<{ token: string; test: boolean }, { registered: boolean }>('registerDevice');
+  const token = await registerPushWithRecovery({
+    getToken: () => getToken(messaging, {
+      vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
+      serviceWorkerRegistration: registration,
+    }),
+    register: token => {
+      if (auth.currentUser?.uid !== uid) throw new Error('Account changed while enabling notifications.');
+      return registerDevice({ token, test });
+    },
+    deleteToken: () => deleteToken(messaging),
+    renewSubscription: async () => {
+      const subscription = await registration.pushManager.getSubscription();
+      return subscription ? subscription.unsubscribe() : true;
+    },
+  });
   if (auth.currentUser?.uid !== uid) throw new Error('Account changed while enabling notifications.');
   let oldRegistration: SavedPushRegistration = null;
   try { oldRegistration = JSON.parse(localStorage.getItem('remind-push-registration') || 'null') as SavedPushRegistration; }

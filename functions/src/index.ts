@@ -484,7 +484,8 @@ export const registerDevice = onCall({ region, enforceAppCheck: true }, request 
   } catch (error) {
     const code = errorFields(error).errorCode;
     warn('Push registration test was rejected', { uid, code });
-    throw new HttpsError('failed-precondition', `Push registration failed (${code}). Please try again.`);
+    throw new HttpsError('failed-precondition', `Push registration failed (${code}). Please try again.`,
+      { messagingCode: code });
   }
   const ownerRef = db.collection('deviceTokens').doc(id);
   await db.runTransaction(async tx => {

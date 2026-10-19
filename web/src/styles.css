@@ -85,6 +85,8 @@ h1, h2, .brand, .eyebrow { font-family: Manrope, system-ui, sans-serif; }
 .mic-button.is-recording { background: #d45166; animation: pulse 1s infinite alternate; }
 .mic-button.is-starting { background: #a56c2c; animation: pulse 1s infinite alternate; }
 @keyframes pulse { to { box-shadow: 0 0 0 8px rgba(212,81,102,.17); } }
+.mic-level { height: 5px; max-width: 180px; margin: 10px auto 0; overflow: hidden; border-radius: 99px; background: var(--surface-soft); }
+.mic-level span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: #24b8b0; transition: width .12s ease-out; }
 .composer-hint { text-align: center; color: var(--muted); font-size: 11px; margin: 12px 0 15px; }
 .bottom-nav { display: flex; position: fixed; z-index: 5; bottom: 0; left: 50%; transform: translateX(-50%); width: min(900px, 100%); height: calc(75px + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -5px 22px rgba(20,24,60,.03); }
 .bottom-nav button { flex: 1; border: 0; color: var(--muted); background: transparent; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; }

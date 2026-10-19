@@ -168,7 +168,7 @@ export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstanc
   const { audioBase64, mimeType } = request.data ?? {};
   const mediaType = typeof mimeType === 'string' ? mimeType.split(';')[0].trim().toLowerCase() : '';
   if (typeof audioBase64 !== 'string' || audioBase64.length > 7_000_000 ||
-      typeof mimeType !== 'string' || !['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav'].includes(mediaType)) {
+      typeof mimeType !== 'string' || !['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav'].includes(mediaType)) {
     throw new HttpsError('invalid-argument', 'Unsupported or oversized recording.');
   }
   const bytes = Buffer.from(audioBase64, 'base64');

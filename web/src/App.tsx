@@ -74,17 +74,20 @@ export default function App() {
   const [startingRecording, setStartingRecording] = useState(false);
   const [workingLabel, setWorkingLabel] = useState('Working on it…');
   const [recordingMode, setRecordingMode] = useState<VoiceRecording['mode']>('wav');
+  const [recordingLevel, setRecordingLevel] = useState(0);
   const [notice, setNotice] = useState('');
   const [voiceReply, setVoiceReply] = useState(true);
   const recorderRef = useRef<VoiceRecording | null>(null);
   const recordingStartRef = useRef(0);
   const recordingTimeoutRef = useRef<number | null>(null);
+  const recordingLevelTimerRef = useRef<number | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => () => {
     recordingStartRef.current++;
     if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
+    if (recordingLevelTimerRef.current !== null) window.clearInterval(recordingLevelTimerRef.current);
     void recorderRef.current?.cancel();
   }, []);
 
@@ -292,6 +295,9 @@ export default function App() {
     recorderRef.current = null;
     if (recordingTimeoutRef.current !== null) window.clearTimeout(recordingTimeoutRef.current);
     recordingTimeoutRef.current = null;
+    if (recordingLevelTimerRef.current !== null) window.clearInterval(recordingLevelTimerRef.current);
+    recordingLevelTimerRef.current = null;
+    setRecordingLevel(0);
     setRecording(false); setBusy(true); setWorkingLabel('Finishing recording…');
     try {
       const audio = await withTimeout(capture.stop(), 4000, 'The recording did not stop. Please try again.');
@@ -327,7 +333,11 @@ export default function App() {
       if (startId !== recordingStartRef.current) { await capture.cancel(); return; }
       recorderRef.current = capture;
       setRecordingMode(capture.mode);
+      setRecordingLevel(0);
       setRecording(true); setStartingRecording(false);
+      if (capture.inputLevel) recordingLevelTimerRef.current = window.setInterval(() => {
+        setRecordingLevel(capture.inputLevel!());
+      }, 120);
       recordingTimeoutRef.current = window.setTimeout(() => { void finishRecording(capture); }, 60_000);
     } catch (error) {
       if (startId === recordingStartRef.current) {
@@ -420,7 +430,8 @@ export default function App() {
           <button type="submit" className="send-button" aria-label="Send" disabled={!draft.trim() || busy || startingRecording}><Send size={19} /></button>
           <button type="button" className={`mic-button ${recording ? 'is-recording' : ''} ${startingRecording ? 'is-starting' : ''}`} aria-label={recording ? 'Stop recording' : startingRecording ? 'Cancel microphone startup' : 'Start recording'} onClick={toggleRecording} disabled={busy}><Mic size={23} /></button>
         </form>
-        <div className="composer-hint">{recording ? `Listening${recordingMode === 'browser' ? ' (browser recorder)' : ''}… tap the microphone to stop` : startingRecording ? 'If Firefox asks, allow microphone access · Tap again to cancel' : 'Tap the microphone to speak · Changes need your confirmation'}</div>
+        {recording && recordingMode === 'wav' && <div className="mic-level" role="meter" aria-label="Microphone input level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(recordingLevel * 100)}><span style={{ width: `${Math.round(recordingLevel * 100)}%` }} /></div>}
+        <div className="composer-hint">{recording ? `Listening${recordingMode === 'browser' ? ' (browser recorder)' : ''}… tap the microphone to stop${recordingMode === 'wav' ? ' · Watch for input level' : ''}` : startingRecording ? 'If Firefox asks, allow microphone access · Tap again to cancel' : 'Tap the microphone to speak · Changes need your confirmation'}</div>
       </section>}
       {view === 'upcoming' && <section className="page"><div className="page-heading"><div className="eyebrow">STAY ON TRACK</div><h1>Upcoming</h1><p>{active.length} active reminder{active.length === 1 ? '' : 's'}</p></div>
         <input className="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search reminders" aria-label="Search reminders" />

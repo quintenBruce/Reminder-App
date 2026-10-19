@@ -2,6 +2,7 @@ export type VoiceRecording = {
   stop: () => Promise<Blob>;
   cancel: () => Promise<void>;
   mode: 'wav' | 'browser';
+  inputLevel?: () => number;
 };
 
 export function microphoneErrorMessage(error: unknown) {
@@ -30,6 +31,10 @@ export function encodeWav(chunks: Float32Array[], sourceRate: number): Blob {
   const source = new Float32Array(total);
   let offset = 0;
   for (const chunk of chunks) { source.set(chunk, offset); offset += chunk.length; }
+  if (total / sourceRate < 0.25) throw new Error('Recording was too short. Speak after “Listening” appears, then tap to stop.');
+  if (source.every(sample => Math.abs(sample) < 0.0005)) {
+    throw new Error('The microphone captured silence. Check that it is not muted, then try again.');
+  }
 
   const sampleRate = Math.min(16000, sourceRate);
   const sampleCount = Math.ceil(total * sampleRate / sourceRate);
@@ -55,22 +60,29 @@ export function encodeWav(chunks: Float32Array[], sourceRate: number): Blob {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
+export function pcmInputLevel(samples: Float32Array): number {
+  if (!samples.length) return 0;
+  let energy = 0;
+  for (const sample of samples) energy += sample * sample;
+  return Math.min(1, Math.sqrt(energy / samples.length) * 12);
+}
+
 async function mediaRecorderFallback(stream: MediaStream): Promise<VoiceRecording> {
-  const mimeType = ['audio/webm', 'audio/mp4', 'audio/wav'].find(type => MediaRecorder.isTypeSupported(type));
+  const mimeType = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav'].find(type => MediaRecorder.isTypeSupported(type));
   if (!mimeType) {
     stream.getTracks().forEach(track => track.stop());
     throw new Error('This browser does not support microphone recording.');
   }
   let recorder: MediaRecorder;
+  const chunks: Blob[] = [];
   try {
     recorder = new MediaRecorder(stream, { mimeType });
+    recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
     recorder.start();
   } catch (error) {
     stream.getTracks().forEach(track => track.stop());
     throw error;
   }
-  const chunks: Blob[] = [];
-  recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
   return {
     mode: 'browser',
     stop: () => new Promise((resolve, reject) => {
@@ -130,12 +142,15 @@ export async function startVoiceRecording(): Promise<VoiceRecording> {
     silentOutput = context.createGain();
     silentOutput.gain.value = 0;
     const chunks: Float32Array[] = [];
+    let inputLevel = 0;
     let stopped: (() => void) | null = null;
     let firstSample: (() => void) | null = null;
     const ready = new Promise<void>(resolve => { firstSample = resolve; });
     processor.port.onmessage = event => {
       if (event.data?.type === 'samples') {
-        chunks.push(event.data.samples as Float32Array);
+        const samples = event.data.samples as Float32Array;
+        chunks.push(samples);
+        inputLevel = pcmInputLevel(samples);
         firstSample?.(); firstSample = null;
       }
       if (event.data?.type === 'stopped') stopped?.();
@@ -153,11 +168,12 @@ export async function startVoiceRecording(): Promise<VoiceRecording> {
     };
     return {
       mode: 'wav',
+      inputLevel: () => inputLevel,
       stop: async () => {
         await new Promise<void>(resolve => {
           stopped = resolve;
           processor!.port.postMessage('stop');
-          setTimeout(resolve, 500);
+          setTimeout(resolve, 1500);
         });
         await cleanup();
         return encodeWav(chunks, sampleRate);

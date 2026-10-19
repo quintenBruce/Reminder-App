@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { encodeWav, microphoneErrorMessage, startVoiceRecording, withTimeout } from '../src/voice';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { encodeWav, microphoneErrorMessage, pcmInputLevel, startVoiceRecording, withTimeout } from '../src/voice';
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('WAV microphone upload', () => {
   it('writes a valid mono 16 kHz PCM file from 48 kHz chunks', async () => {
-    const samples = new Float32Array(4800);
+    const samples = new Float32Array(24000);
     samples.fill(0.5);
     const blob = encodeWav([samples.subarray(0, 2000), samples.subarray(2000)], 48000);
     const bytes = await blob.arrayBuffer();
@@ -16,12 +18,40 @@ describe('WAV microphone upload', () => {
     expect(label(8, 4)).toBe('WAVE');
     expect(header.getUint16(22, true)).toBe(1);
     expect(header.getUint32(24, true)).toBe(16000);
-    expect(header.getUint32(40, true)).toBe(3200);
+    expect(header.getUint32(40, true)).toBe(16000);
     expect(header.getInt16(44, true)).toBeGreaterThan(15000);
   });
 
   it('rejects a capture with no audio samples', () => {
     expect(() => encodeWav([], 48000)).toThrow('No microphone audio was captured');
+  });
+
+  it('rejects very short and silent captures before upload', () => {
+    expect(() => encodeWav([new Float32Array(4800).fill(0.5)], 48000)).toThrow('too short');
+    expect(() => encodeWav([new Float32Array(24000)], 48000)).toThrow('captured silence');
+    expect(pcmInputLevel(new Float32Array(4096))).toBe(0);
+    expect(pcmInputLevel(new Float32Array(4096).fill(0.5))).toBe(1);
+  });
+});
+
+describe('audio worklet', () => {
+  it('captures a live second channel when the first is silent and flushes on stop', () => {
+    const messages: { type: string; samples?: Float32Array }[] = [];
+    let Processor: new () => { port: { onmessage: ((event: { data: string }) => void) | null }; process: (inputs: Float32Array[][], outputs: Float32Array[][]) => boolean };
+    const code = readFileSync('web/public/pcm-recorder.js', 'utf8');
+    runInNewContext(code, {
+      Float32Array,
+      AudioWorkletProcessor: class { port = { onmessage: null, postMessage: (message: { type: string; samples?: Float32Array }) => { messages.push(message); } }; },
+      registerProcessor: (_name: string, constructor: typeof Processor) => { Processor = constructor; },
+    });
+    const recorder = new Processor!();
+    const silent = new Float32Array(128);
+    const speech = new Float32Array(128).fill(0.25);
+    expect(recorder.process([[silent, speech]], [[new Float32Array(128)]])).toBe(true);
+    recorder.port.onmessage?.({ data: 'stop' });
+    expect(messages.map(message => message.type)).toEqual(['samples', 'stopped']);
+    expect(messages[0].samples?.length).toBe(128);
+    expect(messages[0].samples?.[0]).toBe(0.25);
   });
 });
 
@@ -39,7 +69,7 @@ describe('microphone startup', () => {
     await failure;
   });
 
-  it('uses the browser recorder when AudioContext never resumes', async () => {
+  it('uses an Ogg browser recorder when AudioContext never resumes', async () => {
     vi.useFakeTimers();
     const track = { stop: vi.fn() };
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) } });
@@ -48,8 +78,8 @@ describe('microphone startup', () => {
       close() { return Promise.resolve(); }
     });
     vi.stubGlobal('MediaRecorder', class {
-      static isTypeSupported(type: string) { return type === 'audio/webm'; }
-      mimeType = 'audio/webm';
+      static isTypeSupported(type: string) { return type === 'audio/ogg'; }
+      mimeType = 'audio/ogg';
       state = 'inactive';
       ondataavailable: ((event: { data: Blob }) => void) | null = null;
       onstop: (() => void) | null = null;
@@ -68,7 +98,7 @@ describe('microphone startup', () => {
     const capture = await starting;
     expect(capture.mode).toBe('browser');
     const audio = await capture.stop();
-    expect(audio.type).toBe('audio/webm');
+    expect(audio.type).toBe('audio/ogg');
     expect(audio.size).toBeGreaterThan(0);
     expect(track.stop).toHaveBeenCalled();
   });
@@ -131,7 +161,7 @@ describe('microphone startup', () => {
         },
       };
       connect() {
-        setTimeout(() => this.port.onmessage?.({ data: { type: 'samples', samples: new Float32Array(4800).fill(0.5) } }), 1);
+        setTimeout(() => this.port.onmessage?.({ data: { type: 'samples', samples: new Float32Array(24000).fill(0.5) } }), 1);
       }
       disconnect() {}
     });

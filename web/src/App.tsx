@@ -4,7 +4,7 @@ import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/f
 import { Bell, Check, Clock3, History, Mic, Moon, Send, Settings2, Sun, Trash2, X } from 'lucide-react';
 import type { ReminderRecord } from '../../shared/src/schedule';
 import { reminderGroup, reminderSection } from '../../shared/src/reminderState';
-import { auth, callable, closeReminderNotifications, database, enablePush, needsPushRegistration, signIn, signOutUser } from './firebase';
+import { auth, callable, closeReminderNotifications, database, disableWebAlerts, enablePush, needsPushRegistration, signIn, signOutUser, webAlertsEnabled } from './firebase';
 import { microphoneErrorMessage, startVoiceRecording, withTimeout, type VoiceRecording } from './voice';
 import { playHaptic } from './haptics';
 import { createConversationSession, shouldSpeakReply, type RequestSource } from './conversationFlow';
@@ -54,6 +54,7 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [view, setView] = useState<View>('home');
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('remind-theme') as Theme) || 'system');
+  const [webAlerts, setWebAlerts] = useState(webAlertsEnabled);
   const [conversationId, setConversationId] = useState('');
   const [turns, setTurns] = useState<Turn[]>([]);
   const [reminders, setReminders] = useState<ReminderRecord[]>([]);
@@ -262,7 +263,7 @@ export default function App() {
   async function confirm() {
     if (!proposal) return;
     // Begin on the confirmation tap so the browser can show its permission prompt.
-    const pushNeeded = proposal.action !== 'delete' && !!user && needsPushRegistration(user.uid);
+    const pushNeeded = proposal.action !== 'delete' && !!user && webAlerts && needsPushRegistration(user.uid);
     const pushSetup = pushNeeded
       ? enablePush(setNotice).then(() => '').catch(error => error instanceof Error ? error.message : 'Could not enable notifications.')
       : Promise.resolve('');
@@ -455,7 +456,7 @@ export default function App() {
         <h2 className="activity-heading">Recent actions</h2><div className="history-list">{events.length ? events.map(e => <div className="history-item" key={e.id}><div className="history-dot" /><div><strong>{e.action}</strong><span>{reminders.find(r => r.id === e.reminderId)?.title || 'Reminder'}</span></div><time>{dateLabel(e.at)}</time></div>) : <div className="empty-state">Nothing here yet.</div>}</div></section>}
       {view === 'settings' && <section className="page settings-page"><div className="page-heading"><div className="eyebrow">MAKE IT YOURS</div><h1>Settings</h1></div>
         <div className="setting-card"><div><strong>Appearance</strong><p>Follow your phone or choose a look</p></div><div className="segmented">{(['system', 'light', 'dark'] as Theme[]).map(mode => <button className={theme === mode ? 'selected' : ''} key={mode} onClick={() => setTheme(mode)}>{mode === 'light' ? <Sun size={15} /> : mode === 'dark' ? <Moon size={15} /> : null}{mode}</button>)}</div></div>
-        <div className="setting-card"><div><strong>Notifications</strong><p>Allow Firefox to send reminders to your phone</p></div><button className="secondary" onClick={() => enablePush(setNotice).then(() => setNotice('Test notification sent.')).catch(error => setNotice(error.message))}>Enable & test</button></div>
+        <div className="setting-card"><div><strong>Web notifications</strong><p>{webAlerts ? 'Firefox can send reminders to this phone' : 'Off on this phone; use the Android app for alerts'}</p></div><button className="secondary" onClick={() => (webAlerts ? disableWebAlerts() : enablePush(setNotice)).then(() => { setWebAlerts(!webAlerts); setNotice(webAlerts ? 'Web notifications disabled on this phone.' : 'Test notification sent.'); }).catch(error => setNotice(error.message))}>{webAlerts ? 'Disable on this phone' : 'Enable & test'}</button></div>
         <div className="setting-card"><div><strong>Spoken replies</strong><p>Read responses aloud only after spoken requests</p></div><label className="switch"><input type="checkbox" checked={voiceReply} onChange={event => setVoiceReply(event.target.checked)} /><span /></label></div>
         <div className="setting-card"><div><strong>Account</strong><p>{user.email}</p></div><button className="secondary" onClick={() => signOutUser().catch(error => setNotice(error.message))}>Sign out</button></div>
       </section>}

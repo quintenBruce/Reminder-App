@@ -53,11 +53,14 @@ export function applyReminderAction(
   now: number,
   snoozeMinutes: number | null,
   occurrenceId?: string,
+  allowLocallyDelivered = false,
 ): Partial<ReminderRecord> {
   const occurrenceAt = occurrenceId?.startsWith(`${reminder.id}_`)
     ? Number(occurrenceId.slice(reminder.id.length + 1)) : null;
+  const locallyDue = allowLocallyDelivered && occurrenceAt !== null &&
+    occurrenceAt === reminder.nextDueAt && occurrenceAt <= now;
   if (occurrenceId && (!Number.isFinite(occurrenceAt) ||
-      (occurrenceAt !== reminder.lastScheduledAt && occurrenceAt !== reminder.currentScheduledAt))) {
+      (occurrenceAt !== reminder.lastScheduledAt && occurrenceAt !== reminder.currentScheduledAt && !locallyDue))) {
     throw new Error('That alert is no longer current.');
   }
   if (occurrenceAt != null && reminder.lastAcknowledgedScheduledAt === occurrenceAt && action !== 'dismiss') {

@@ -1,0 +1,15 @@
+{
+  "project_info": {
+    "project_number": "831855773727",
+    "project_id": "reminder-app-a2150"
+  },
+  "client": [{
+    "client_info": {
+      "mobilesdk_app_id": "1:831855773727:android:0000000000000000000000",
+      "android_client_info": { "package_name": "com.qcbru.remind" }
+    },
+    "oauth_client": [{ "client_id": "placeholder.apps.googleusercontent.com", "client_type": 3 }],
+    "api_key": [{ "current_key": "placeholder" }]
+  }],
+  "configuration_version": "1"
+}

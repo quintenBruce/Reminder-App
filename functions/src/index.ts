@@ -276,7 +276,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   return { conversationId, reply: readback, proposal };
 }));
 
-async function applyAction(uid: string, reminderId: string, action: 'done' | 'dismiss' | 'snooze', snoozeMinutes: number | null, requestId: string, expectedVersion?: number | null, occurrenceId?: string, conversationId?: string) {
+async function applyAction(uid: string, reminderId: string, action: 'done' | 'dismiss' | 'snooze', snoozeMinutes: number | null, requestId: string, expectedVersion?: number | null, occurrenceId?: string, conversationId?: string, localDelivery = false) {
   const ref = root(uid).collection('reminders').doc(reminderId);
   const idempotency = root(uid).collection('actions').doc(requestId);
   const now = Date.now();
@@ -293,15 +293,18 @@ async function applyAction(uid: string, reminderId: string, action: 'done' | 'di
     if (r.status !== 'active') throw new HttpsError('failed-precondition', 'Reminder is canceled.');
     if (expectedVersion != null && r.version !== expectedVersion) throw new HttpsError('failed-precondition', 'Reminder changed. Please ask again.');
     let update: Partial<ReminderRecord>;
-    try { update = applyReminderAction(r, action, now, snoozeMinutes, occurrenceId); }
+    try { update = applyReminderAction(r, action, now, snoozeMinutes, occurrenceId, localDelivery); }
     catch (error) { throw new HttpsError('failed-precondition', error instanceof Error ? error.message : 'Invalid occurrence action.'); }
     tx.update(ref, action === 'done' ? { ...update, dismissedAt: FieldValue.delete() } : update);
     const alertAt = occurrenceId?.startsWith(`${reminderId}_`)
       ? Number(occurrenceId.slice(reminderId.length + 1)) : r.lastScheduledAt;
-    if (alertAt != null && Number.isFinite(alertAt) && r.lastSentAt != null && r.lastScheduledAt === alertAt) {
+    if (alertAt != null && Number.isFinite(alertAt) &&
+        ((r.lastSentAt != null && r.lastScheduledAt === alertAt) ||
+          (localDelivery && r.nextDueAt === alertAt && alertAt <= now))) {
       tx.set(root(uid).collection('occurrences').doc(`${reminderId}_${alertAt}`),
-        action === 'done' ? { reminderId, acknowledgedAt: now, acknowledgment: 'done' }
-          : action === 'snooze' ? { reminderId, snoozedUntil: update.nextDueAt } : { reminderId, dismissedAt: now },
+        action === 'done' ? { reminderId, acknowledgedAt: now, acknowledgment: 'done', ...(localDelivery ? { deliverySource: 'local' } : {}) }
+          : action === 'snooze' ? { reminderId, snoozedUntil: update.nextDueAt, ...(localDelivery ? { deliverySource: 'local' } : {}) }
+            : { reminderId, dismissedAt: now },
         { merge: true });
     }
     const result = { reminderId, action, at: now };
@@ -320,7 +323,9 @@ export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, r
   const action = request.data?.action;
   if (!['done', 'dismiss', 'snooze'].includes(action)) throw new HttpsError('invalid-argument', 'Invalid action.');
   const requestId = textValue(request.data?.requestId, 100);
-  const result = await applyAction(uid, reminderId, action, request.data?.snoozeMinutes ?? null, requestId, null, stringValue(request.data?.occurrenceId, 150) || undefined);
+  const localDelivery = request.data?.deliverySource === 'local';
+  const result = await applyAction(uid, reminderId, action, request.data?.snoozeMinutes ?? null, requestId, null,
+    stringValue(request.data?.occurrenceId, 150) || undefined, undefined, localDelivery);
   trace.stage('action.committed', { reminderId, requestId, action });
   return result;
 }));
@@ -479,7 +484,8 @@ export const registerDevice = onCall({ region, enforceAppCheck: true }, request 
   const test = request.data?.test === true;
   const id = createHash('sha256').update(token).digest('hex');
   try {
-    await getMessaging().send({ token, data: { title: 'Remind is ready', body: 'Notifications are connected.', reminderId: 'test', url: '/' } }, !test);
+    await getMessaging().send({ token, data: { title: 'Remind is ready', body: 'Notifications are connected.', reminderId: 'test', alertId: randomUUID(), uid, url: '/' },
+      android: { priority: 'high', ttl: 3_600_000 } }, !test);
     trace.stage('push.checkAccepted', { test });
   } catch (error) {
     const code = errorFields(error).errorCode;
@@ -606,7 +612,9 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
       try {
         const results = await getMessaging().sendEachForMulticast({
           tokens: selected.map(device => device.get('token') as string),
-          data: reminderPushData(claimed.title, claimed.notes, claimed.id, `${claimed.id}_${scheduledAt}`),
+          data: { ...reminderPushData(claimed.title, claimed.notes, claimed.id, `${claimed.id}_${scheduledAt}`,
+            `${claimed.id}_${claimed.nextDueAt}`), uid },
+          android: { priority: 'high', ttl: 3_600_000 },
           webpush: { headers: { TTL: '3600' } },
         });
         diagnostic = deliveryDiagnostic(selected.length, results.responses);

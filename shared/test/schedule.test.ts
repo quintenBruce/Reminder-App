@@ -16,6 +16,16 @@ function reminder(partial: Partial<ReminderRecord> = {}): ReminderRecord {
 }
 
 describe('deterministic recurrence', () => {
+  it('accepts a locally delivered due occurrence but rejects one before it is due', () => {
+    const due = ms('2026-10-11T14:00:00-05:00');
+    const r = reminder({ nextDueAt: due, lastSentAt: undefined, lastScheduledAt: undefined });
+    expect(() => applyReminderAction(r, 'done', due - 1, null, `r1_${due}`, true)).toThrow('no longer current');
+    expect(applyReminderAction(r, 'done', due, null, `r1_${due}`, true)).toMatchObject({
+      nextDueAt: null, status: 'completed', lastAcknowledgedScheduledAt: due,
+    });
+    expect(applyReminderAction(r, 'snooze', due, 10, `r1_${due}`, true).nextDueAt).toBe(due + 600_000);
+    expect(() => applyReminderAction(r, 'done', due, null, `r1_${due + 1}`, true)).toThrow('no longer current');
+  });
   it('schedules an elapsed interval from its anchor, including after a late dispatcher', () => {
     const rule = { kind: 'interval' as const, startAt: '2026-10-11T09:00:00-05:00', everyMinutes: 5 };
     expect(iso(nextOccurrence(rule, ms('2026-10-11T09:11:00-05:00')))).toBe('2026-10-11T14:15:00.000Z');

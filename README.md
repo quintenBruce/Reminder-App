@@ -1,5 +1,11 @@
 # Remind
 
+The native Android client is in [android/](android/README.md). It uses the same
+Firebase accounts and reminder records as the PWA. Android sign-in and phone
+notifications require Android app registration and the real `google-services.json`;
+see its setup guide. The PWA remains available during the transition, and its
+Settings can disable web notifications on a phone using native alerts.
+
 Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [TECHNICAL_IMPLEMENTATION_PLAN.md](TECHNICAL_IMPLEMENTATION_PLAN.md). For Firebase, Google Cloud, and GitHub setup, use [the deployment guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md).
 
 ## Implemented source

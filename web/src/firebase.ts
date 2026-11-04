@@ -26,6 +26,27 @@ export const auth = getAuth(app);
 export const database = getFirestore(app);
 export const functions = getFunctions(app, import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-south1');
 let stopForegroundMessages: (() => void) | null = null;
+const WEB_ALERTS_KEY = 'remind-web-alerts-enabled';
+
+export function webAlertsEnabled() {
+  return localStorage.getItem(WEB_ALERTS_KEY) !== 'false';
+}
+
+export async function disableWebAlerts() {
+  const saved = localStorage.getItem('remind-push-registration');
+  let registration: { uid: string; token: string } | null = null;
+  try { registration = saved ? JSON.parse(saved) as { uid: string; token: string } : null; }
+  catch { /* Remove malformed local state below. */ }
+  if (registration?.token && registration.uid === auth.currentUser?.uid) {
+    await callable<{ token: string }, { unregistered: boolean }>('unregisterDevice')({ token: registration.token });
+  }
+  stopForegroundMessages?.();
+  stopForegroundMessages = null;
+  localStorage.removeItem('remind-push-registration');
+  try { if (await isSupported()) await deleteToken(getMessaging(app)); }
+  catch { /* Server registration is already removed. */ }
+  localStorage.setItem(WEB_ALERTS_KEY, 'false');
+}
 
 export async function signIn() {
   const provider = new GoogleAuthProvider();
@@ -90,6 +111,7 @@ export async function enablePush(onForeground: (message: string) => void, test =
   try { oldRegistration = JSON.parse(localStorage.getItem('remind-push-registration') || 'null') as SavedPushRegistration; }
   catch { /* Replace malformed local state below. */ }
   localStorage.setItem('remind-push-registration', JSON.stringify({ uid, token, checkedAt: Date.now() }));
+  localStorage.setItem(WEB_ALERTS_KEY, 'true');
   if (oldRegistration?.uid === uid && oldRegistration.token && oldRegistration.token !== token) {
     await callable<{ token: string }, { unregistered: boolean }>('unregisterDevice')({ token: oldRegistration.token }).catch(() => undefined);
   }
@@ -98,6 +120,7 @@ export async function enablePush(onForeground: (message: string) => void, test =
 }
 
 export function needsPushRegistration(uid: string) {
+  if (!webAlertsEnabled()) return false;
   if (!('Notification' in window) || Notification.permission === 'denied') return false;
   try {
     const saved = JSON.parse(localStorage.getItem('remind-push-registration') || 'null') as SavedPushRegistration;

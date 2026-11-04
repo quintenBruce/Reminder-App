@@ -7,11 +7,12 @@ self.addEventListener('push', event => {
   const body = typeof data.body === 'string' ? data.body.trim() : '';
   const reminderId = data.reminderId || '';
   const occurrenceId = data.occurrenceId || reminderId;
+  const alertId = data.alertId || occurrenceId;
   event.waitUntil(self.registration.showNotification(title, {
     ...(body ? { body } : {}),
     icon: '/icon-192.png',
     badge: '/badge-96.png',
-    tag: occurrenceId,
+    tag: alertId,
     data: { reminderId, occurrenceId, url: data.url || '/' },
     actions: reminderId === 'test' ? [] : [
       { action: 'done', title: 'Done' },

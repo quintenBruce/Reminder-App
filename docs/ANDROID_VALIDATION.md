@@ -3,6 +3,8 @@
 Checked on 2026-11-03. The real Android Firebase configuration was added after
 the initial build-only verification; the Android tests and APK builds also pass
 with the real configuration.
+On the installed Android Studio Panda 4 (2025.3.4), AGP 9.5.0 was incompatible.
+The project now pins AGP 9.2.1 and Gradle 9.4.1, and the same Android checks pass.
 
 | Check | Result |
 | --- | --- |

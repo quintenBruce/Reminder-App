@@ -1,7 +1,8 @@
 # Remind for Android
 
 Open this directory in Android Studio. The project uses Kotlin, Jetpack Compose, Material 3,
-Android API 37, AGP 9.5.0, Gradle 9.6.0, and the existing Firebase backend in `us-south1`.
+Android API 37, AGP 9.2.1, Gradle 9.4.1, and the existing Firebase backend in `us-south1`.
+These build tools support the installed Android Studio Panda 4 (2025.3.4).
 
 ## Firebase setup required for a usable install
 

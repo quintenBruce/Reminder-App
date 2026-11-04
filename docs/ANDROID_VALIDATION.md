@@ -1,7 +1,8 @@
 # Android migration validation
 
-Checked on 2026-11-03 with a build-only Firebase configuration (the real
-Android Firebase app has not yet been registered).
+Checked on 2026-11-03. The real Android Firebase configuration was added after
+the initial build-only verification; the Android tests and APK builds also pass
+with the real configuration.
 
 | Check | Result |
 | --- | --- |
@@ -9,10 +10,10 @@ Android Firebase app has not yet been registered).
 | Web TypeScript and Functions builds | Passed |
 | Production PWA build | Passed (existing bundle size warning) |
 | Android JVM tests | 11 passed: recurrence, DST, account isolation, local actions, and notification deduplication |
-| Android debug app APK | Built |
+| Android debug app APK | Built with real Firebase configuration |
 | Compose UI test APK | Built; execution awaits an emulator or phone |
 | Firebase Emulator callable contract tests | Pending Firebase emulator and Android app configuration |
-| Real Samsung phone acceptance | Pending real `google-services.json`, App Check debug token, and phone access |
+| Real Samsung phone acceptance | Pending App Check registration and debug token, and phone access |
 
 ## Remaining acceptance run
 

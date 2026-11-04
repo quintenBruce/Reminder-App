@@ -44,8 +44,10 @@ the new debug fingerprints instead.
    The project already includes the Google services Gradle plugin and Firebase SDKs,
    so the console's Gradle setup snippets are unnecessary.
 6. In **Security** > **App Check** > **Apps**, register this Android app with the
-   **Play Integrity** provider, using the SHA-256 above if prompted. The debug build
-   uses Firebase's debug App Check provider. Open `android/` in Android Studio and
+   **Play Integrity** provider, using the SHA-256 above if prompted. This creates
+   the App Check entry needed to allowlist a debug token; the debug APK itself uses
+   Firebase's debug provider and does not need a Play Integrity verdict. Open
+   `android/` in Android Studio and
    run the app once on an emulator or phone. In **Logcat**, filter for
    `DebugAppCheckProvider`; copy the UUID shown after **Enter this debug secret into
    the allow list in the Firebase Console**. In Firebase Console, go to **Security**

@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "831855773727",
+    "project_id": "reminder-app-a2150",
+    "storage_bucket": "reminder-app-a2150.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:831855773727:android:caab47952bfedd5bf5ad2a",
+        "android_client_info": {
+          "package_name": "com.qcbru.remind"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "831855773727-oj5g5put2varsh1mog8nv7v9krck2l12.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.qcbru.remind",
+            "certificate_hash": "f8658b16ee78485caadf34396c58baf46e6aaf04"
+          }
+        },
+        {
+          "client_id": "831855773727-i21064s1qnons5viu96q35pu7a40fbth.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBiqlMWIy-bwHjRxABNSuLKLIcwBw0XDIA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "831855773727-i21064s1qnons5viu96q35pu7a40fbth.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

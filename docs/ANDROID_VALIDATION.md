@@ -15,7 +15,7 @@ The project now pins AGP 9.2.1 and Gradle 9.4.1, and the same Android checks pas
 | Android debug app APK | Built with real Firebase configuration |
 | Compose UI test APK | Built; execution awaits an emulator or phone |
 | Firebase Emulator callable contract tests | Pending Firebase emulator and Android app configuration |
-| Real Samsung phone acceptance | Pending App Check registration and debug token, and phone access |
+| Real Samsung phone acceptance | User reports the app works on phone; alert, offline, and restart checks remain unrecorded |
 
 ## Remaining acceptance run
 
@@ -25,3 +25,11 @@ notification; a spoken request and spoken readback; an offline local alert and
 queued action; reconnect and account sync; a restart; and disabled PWA web push
 on the same phone. Record the phone model and Android version, along with any
 failure, here when the device is available.
+
+## Material 3 UI refresh (2026-11-05)
+
+Added a custom light and dark theme, clearer Ask and reminder layouts, compact
+reminder action menus, and grouped Settings. The reminder card UI test now covers
+Done, Snooze, Edit, Conversations, and Delete callbacks. The 11 Android JVM tests
+passed; the debug app and UI test APKs built. `connectedDebugAndroidTest` could
+not run because no phone or emulator was connected to the build environment.

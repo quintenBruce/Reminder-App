@@ -1,7 +1,8 @@
 package com.qcbru.remind
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.qcbru.remind.data.Reminder
@@ -26,7 +27,14 @@ class ReminderCardTest {
         assertEquals("done", lastAction)
         compose.onNodeWithText("Snooze 10 min").performClick()
         assertEquals("snooze", lastAction)
+        compose.onNodeWithContentDescription("More actions").performClick()
         compose.onNodeWithText("Conversations").performClick()
         assertEquals("history", lastAction)
+        compose.onNodeWithContentDescription("More actions").performClick()
+        compose.onNodeWithText("Edit").performClick()
+        assertEquals("edit", lastAction)
+        compose.onNodeWithContentDescription("More actions").performClick()
+        compose.onNodeWithText("Delete").performClick()
+        assertEquals("delete", lastAction)
     }
 }

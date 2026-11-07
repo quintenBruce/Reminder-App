@@ -47,6 +47,8 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
@@ -464,6 +466,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
 internal fun ReminderCard(reminder: Reminder, onEdit: () -> Unit, onHistory: () -> Unit,
     onDelete: () -> Unit, onAction: (String) -> Unit) {
     var menuExpanded by remember { mutableStateOf(false) }
+    var scheduleExpanded by rememberSaveable(reminder.id) { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = if (reminder.currentAlert)
             MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface),
@@ -498,26 +501,32 @@ internal fun ReminderCard(reminder: Reminder, onEdit: () -> Unit, onHistory: () 
             if (reminder.notes.isNotBlank()) Text(reminder.notes,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (reminder.active) {
-                Text("Follows up every ${reminder.repeatUntilDoneMinutes ?: 30} min until Done", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (reminder.active) Text("UPCOMING TIMES", style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
             reminder.nextDueAt?.let { due ->
-                Row(verticalAlignment = Alignment.CenterVertically,
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.Schedule, contentDescription = null, Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.primary)
-                    Text("${if (reminder.currentScheduledAt != null) "Follow-up" else "Next"}: ${dateLabel(due)}",
-                        style = MaterialTheme.typography.bodyMedium)
+                    Text("Next: ${dateLabel(due)}${if (reminder.currentScheduledAt != null) " · follow-up" else ""}",
+                        modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    IconButton(onClick = { scheduleExpanded = !scheduleExpanded }) {
+                        Icon(if (scheduleExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (scheduleExpanded) "Show fewer times" else "Show more times")
+                    }
                 }
-                val regular = if (reminder.currentScheduledAt != null)
-                    Schedule.preview(reminder.rule, reminder.currentScheduledAt, 5)
-                else listOf(due) + Schedule.preview(reminder.rule, due, 4)
-                regular.take(5).forEachIndexed { index, time ->
-                    Text("${if (index == 0) "Scheduled" else "Then"} ${dateLabel(time)}", style = MaterialTheme.typography.bodySmall,
+                if (scheduleExpanded) {
+                    Text("Follows up every ${reminder.repeatUntilDoneMinutes ?: 30} min until Done",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val regular = if (reminder.currentScheduledAt != null)
+                        Schedule.preview(reminder.rule, reminder.currentScheduledAt, 5)
+                    else Schedule.preview(reminder.rule, due, 4)
+                    if (regular.isNotEmpty()) Text("${if (reminder.currentScheduledAt != null) "SCHEDULED" else "LATER"} TIMES",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    regular.forEach { time ->
+                        Text(dateLabel(time), style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
             if (reminder.currentAlert) {

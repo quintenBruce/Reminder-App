@@ -283,15 +283,6 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                                     color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                         }
-                        Spacer(Modifier.height(20.dp))
-                        Text("TRY AN EXAMPLE", style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedButton(onClick = {
-                            draft = "Remind me every weekday at 8:30 to take my vitamins"
-                        }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Every weekday at 8:30 · Take vitamins")
-                        }
                     }
                     items(state.turns) { (user, assistant) ->
                         ConversationTurn(user, assistant)

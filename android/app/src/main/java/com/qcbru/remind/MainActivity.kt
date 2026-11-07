@@ -37,6 +37,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -91,6 +93,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CustomCredential
@@ -222,7 +227,18 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
     onSignIn: () -> Unit, onMic: () -> Unit, onConfirm: () -> Unit, onNotifications: () -> Unit,
     onExactAlarms: () -> Unit, onHaptic: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     var draft by rememberSaveable { mutableStateOf("") }
+    val sendDraft = {
+        if (draft.isNotBlank() && !state.busy) {
+            onHaptic()
+            model.send(draft)
+            draft = ""
+            keyboard?.hide()
+            focusManager.clearFocus()
+        }
+    }
     var search by rememberSaveable { mutableStateOf("") }
     var deleting by remember { mutableStateOf<Reminder?>(null) }
     var deleteSession by remember { mutableStateOf(false) }
@@ -314,10 +330,12 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = draft, onValueChange = { draft = it },
                             modifier = Modifier.weight(1f), label = { Text("Reminder") },
-                            singleLine = true)
-                        IconButton(enabled = draft.isNotBlank() && !state.busy, onClick = {
-                            onHaptic(); model.send(draft); draft = ""
-                        }) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send") }
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { sendDraft() }))
+                        IconButton(enabled = draft.isNotBlank() && !state.busy, onClick = sendDraft) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                        }
                     }
                     FilledTonalButton(enabled = !state.busy, onClick = { onHaptic(); onMic() },
                         modifier = Modifier.fillMaxWidth()) {

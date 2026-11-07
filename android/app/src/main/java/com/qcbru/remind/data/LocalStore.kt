@@ -6,14 +6,18 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONObject
 
-class LocalStore(context: Context) : SQLiteOpenHelper(context, "remind.db", null, 2) {
+data class PostedNotification(val occurrenceId: String, val dueAt: Long, val alertId: String)
+
+class LocalStore(context: Context) : SQLiteOpenHelper(context, "remind.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE reminders(uid TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(uid,id))")
         db.execSQL("CREATE TABLE alerts(uid TEXT NOT NULL, alert_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, shown_at INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY(uid,alert_id))")
         db.execSQL("CREATE TABLE actions(request_id TEXT PRIMARY KEY, uid TEXT NOT NULL, reminder_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, action TEXT NOT NULL, snooze_minutes INTEGER, snooze_at INTEGER, local_delivery INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE posted_notifications(uid TEXT NOT NULL, reminder_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, due_at INTEGER NOT NULL, alert_id TEXT NOT NULL, PRIMARY KEY(uid,reminder_id))")
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) db.execSQL("ALTER TABLE actions ADD COLUMN snooze_at INTEGER")
+        if (oldVersion < 3) db.execSQL("CREATE TABLE posted_notifications(uid TEXT NOT NULL, reminder_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, due_at INTEGER NOT NULL, alert_id TEXT NOT NULL, PRIMARY KEY(uid,reminder_id))")
     }
 
     fun replaceReminders(uid: String, reminders: List<Reminder>) {
@@ -86,6 +90,30 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "remind.db", null
         return ids
     }
 
+    fun postedNotifications(uid: String): Map<String, PostedNotification> {
+        val result = mutableMapOf<String, PostedNotification>()
+        readableDatabase.rawQuery("SELECT reminder_id, occurrence_id, due_at, alert_id FROM posted_notifications WHERE uid=?",
+            arrayOf(uid)).use { cursor -> while (cursor.moveToNext())
+            result[cursor.getString(0)] = PostedNotification(cursor.getString(1), cursor.getLong(2), cursor.getString(3)) }
+        return result
+    }
+
+    fun postedNotification(uid: String, reminderId: String): PostedNotification? = readableDatabase.rawQuery(
+        "SELECT occurrence_id, due_at, alert_id FROM posted_notifications WHERE uid=? AND reminder_id=?",
+        arrayOf(uid, reminderId)
+    ).use { if (it.moveToFirst()) PostedNotification(it.getString(0), it.getLong(1), it.getString(2)) else null }
+
+    fun savePostedNotification(uid: String, reminderId: String, notification: PostedNotification) {
+        writableDatabase.insertWithOnConflict("posted_notifications", null, ContentValues().apply {
+            put("uid", uid); put("reminder_id", reminderId); put("occurrence_id", notification.occurrenceId)
+            put("due_at", notification.dueAt); put("alert_id", notification.alertId)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun removePostedNotification(uid: String, reminderId: String) {
+        writableDatabase.delete("posted_notifications", "uid=? AND reminder_id=?", arrayOf(uid, reminderId))
+    }
+
     fun hasPendingAction(uid: String, occurrenceId: String): Boolean = readableDatabase.rawQuery(
         "SELECT 1 FROM actions WHERE uid=? AND occurrence_id=? LIMIT 1", arrayOf(uid, occurrenceId)
     ).use { it.moveToFirst() }
@@ -116,7 +144,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "remind.db", null
         val db = writableDatabase
         db.beginTransaction()
         try {
-            for (table in listOf("reminders", "alerts", "actions")) db.delete(table, "uid=?", arrayOf(uid))
+            for (table in listOf("reminders", "alerts", "actions", "posted_notifications")) db.delete(table, "uid=?", arrayOf(uid))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }

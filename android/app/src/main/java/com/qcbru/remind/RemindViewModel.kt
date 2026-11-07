@@ -197,7 +197,18 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun openSnoozeChooser(reminderId: String, occurrenceId: String) {
+        val uid = mutable.value.uid ?: return
+        val reminder = store.reminder(uid, reminderId) ?: return
+        if (!currentOccurrence(uid, reminder, occurrenceId)) return
         mutable.update { it.copy(snoozeReminderId = reminderId, snoozeOccurrenceId = occurrenceId) }
+    }
+
+    private fun currentOccurrence(uid: String, reminder: Reminder, occurrenceId: String): Boolean {
+        val scheduledAt = occurrenceId.removePrefix("${reminder.id}_").toLongOrNull() ?: return false
+        if (reminder.lastAcknowledgedScheduledAt == scheduledAt ||
+            (reminder.lastScheduledAt != null && scheduledAt < reminder.lastScheduledAt)) return false
+        return (reminder.currentAlert && reminder.occurrenceId == occurrenceId) ||
+            store.postedNotification(uid, reminder.id)?.occurrenceId == occurrenceId
     }
 
     fun closeSnoozeChooser() { mutable.update { it.copy(snoozeReminderId = null, snoozeOccurrenceId = null) } }
@@ -206,7 +217,12 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         val uid = mutable.value.uid ?: return
         val id = mutable.value.snoozeReminderId ?: return
         val occurrence = mutable.value.snoozeOccurrenceId ?: return
-        if (store.reminder(uid, id) == null) return
+        val reminder = store.reminder(uid, id) ?: return
+        if (!currentOccurrence(uid, reminder, occurrence)) {
+            closeSnoozeChooser()
+            notice("That alert is no longer current")
+            return
+        }
         val local = store.alertIds(uid, occurrence).any { store.isLocalAlert(uid, it) }
         repo.queueAction(uid, id, occurrence, "snooze", local, minutes, exactAt)
         closeSnoozeChooser()

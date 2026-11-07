@@ -70,6 +70,19 @@ class LocalStoreTest {
         assertEquals("r1", store.reminder("alice", "r1")?.title)
     }
 
+    @Test fun tracksTheLatestPostedOccurrencePerAccountAndReminder() {
+        val first = com.qcbru.remind.data.PostedNotification("r1_100", 130, "r1_130")
+        val next = com.qcbru.remind.data.PostedNotification("r1_200", 200, "r1_200")
+        store.savePostedNotification("alice", "r1", first)
+        store.savePostedNotification("bob", "r1", first)
+        store.savePostedNotification("alice", "r1", next)
+        assertEquals(next, store.postedNotification("alice", "r1"))
+        assertEquals(first, store.postedNotification("bob", "r1"))
+        store.clearAccount("alice")
+        assertNull(store.postedNotification("alice", "r1"))
+        assertEquals(first, store.postedNotification("bob", "r1"))
+    }
+
     @Test fun upgradesQueuedActionsWithoutLosingThem() {
         val context = RuntimeEnvironment.getApplication()
         store.close()
@@ -82,5 +95,6 @@ class LocalStoreTest {
         store = LocalStore(context)
         assertEquals(listOf(PendingAction("old", "alice", "r1", "r1_1", "snooze", 10, null, true)),
             store.pending("alice"))
+        assertTrue(store.postedNotifications("alice").isEmpty())
     }
 }

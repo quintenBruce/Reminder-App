@@ -1,6 +1,5 @@
 package com.qcbru.remind.alerts
 
-import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -19,10 +18,12 @@ class ActionReceiver : BroadcastReceiver() {
         val store = (context.applicationContext as RemindApplication).store
         val reminder = store.reminder(uid, id) ?: return
         val scheduledAt = occurrenceId.removePrefix("${id}_").toLongOrNull() ?: return
-        if (reminder.lastAcknowledgedScheduledAt == scheduledAt) return
+        if (reminder.lastAcknowledgedScheduledAt == scheduledAt ||
+            (reminder.lastScheduledAt != null && scheduledAt < reminder.lastScheduledAt) ||
+            store.postedNotification(uid, id)?.occurrenceId != occurrenceId) return
         val local = store.isLocalAlert(uid, alertId) ||
             store.alertIds(uid, occurrenceId).any { store.isLocalAlert(uid, it) }
         repo.queueAction(uid, id, occurrenceId, action, local)
-        context.getSystemService(NotificationManager::class.java).cancel(alertId.hashCode())
+        AlertNotifier.cancel(context, uid, id)
     }
 }

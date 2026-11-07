@@ -12,6 +12,7 @@ import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.qcbru.remind.RemindApplication
 import com.qcbru.remind.alerts.AlertScheduler
+import com.qcbru.remind.alerts.AlertNotifier
 import com.qcbru.remind.widget.ReminderWidgetProvider
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
@@ -45,6 +46,7 @@ class RemindRepository(private val context: Context) {
                     // A cached snapshot may be incomplete. Only a server snapshot replaces the alarm mirror.
                     if (!snapshot.metadata.isFromCache) {
                         store.replaceReminders(uid, reminders)
+                        AlertNotifier.reconcile(context, uid, store.reminders(uid))
                         AlertScheduler(context).reschedule(uid)
                         ReminderWidgetProvider.update(context)
                     }
@@ -69,6 +71,7 @@ class RemindRepository(private val context: Context) {
             .limit(100).get(Source.SERVER).await().documents
             .map { it.data.orEmpty() + ("id" to it.id) }
         store.replaceReminders(uid, reminders)
+        AlertNotifier.reconcile(context, uid, store.reminders(uid))
         AlertScheduler(context).reschedule(uid)
         ReminderWidgetProvider.update(context)
         return store.reminders(uid) to events
@@ -107,6 +110,7 @@ class RemindRepository(private val context: Context) {
         val doc = database.collection("users").document(uid).collection("reminders").document(id).get(Source.SERVER).await()
         if (doc.exists()) store.saveReminder(uid, Reminder.fromDocument(doc))
         else store.removeReminder(uid, id)
+        AlertNotifier.reconcile(context, uid, store.reminders(uid))
         AlertScheduler(context).reschedule(uid)
         ReminderWidgetProvider.update(context)
     }
@@ -127,6 +131,7 @@ class RemindRepository(private val context: Context) {
         val token = preferences.getString("push_token", null)
         if (uid != null && token != null) call("unregisterDevice", mapOf("token" to token))
         stopObserving()
+        context.getSystemService(NotificationManager::class.java).cancelAll()
         if (uid != null) {
             AlertScheduler(context).cancelAll(uid)
             store.clearAccount(uid)
@@ -142,6 +147,7 @@ class RemindRepository(private val context: Context) {
     fun setActiveUid(uid: String) {
         val old = cachedUid()
         if (old != null && old != uid) {
+            context.getSystemService(NotificationManager::class.java).cancelAll()
             AlertScheduler(context).cancelAll(old)
             store.clearAccount(old)
         }
@@ -156,6 +162,7 @@ class RemindRepository(private val context: Context) {
         store.queue(pending)
         val manager = context.getSystemService(NotificationManager::class.java)
         store.alertIds(uid, occurrenceId).forEach { manager.cancel(it.hashCode()) }
+        AlertNotifier.cancel(context, uid, reminderId)
         store.reminder(uid, reminderId)?.let { reminder ->
             store.saveReminder(uid, LocalActions.apply(reminder, occurrenceId, action,
                 System.currentTimeMillis(), snoozeMinutes, snoozeAt))

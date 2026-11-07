@@ -9,6 +9,7 @@ import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import com.qcbru.remind.data.LocalStore
+import com.qcbru.remind.alerts.AlertNotifier
 
 class RemindApplication : Application() {
     lateinit var store: LocalStore
@@ -25,5 +26,6 @@ class RemindApplication : Application() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel("reminders", "Reminders", NotificationManager.IMPORTANCE_HIGH)
         )
+        AlertNotifier.migrate(this)
     }
 }

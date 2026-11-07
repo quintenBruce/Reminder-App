@@ -80,6 +80,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -157,6 +158,22 @@ class MainActivity : ComponentActivity() {
                     onHaptic = { window.decorView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) })
             }
         }
+        handleReminderIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleReminderIntent(intent)
+    }
+
+    private fun handleReminderIntent(intent: Intent) {
+        val uid = intent.getStringExtra("uid")
+        if (uid != null && uid != RemindRepository(this).cachedUid()) return
+        val reminderId = intent.getStringExtra("reminderId") ?: return
+        if (intent.data?.scheme == "remind" && intent.data?.host == "later") {
+            intent.getStringExtra("occurrenceId")?.let { model.openSnoozeChooser(reminderId, it) }
+        } else model.setTab("Upcoming")
     }
 
     private fun signIn() {
@@ -225,7 +242,8 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                         "Upcoming" -> Icons.Default.Notifications
                         "History" -> Icons.Default.History
                         else -> Icons.Default.Settings
-                    }, contentDescription = tab) }, label = { Text(tab) })
+                    }, contentDescription = if (tab == "Ask") "Create" else tab) },
+                    label = { Text(if (tab == "Ask") "Create" else tab) })
             }
         } } ) { padding ->
         if (state.uid == null) WelcomeScreen(Modifier.fillMaxSize().padding(padding), onSignIn)
@@ -235,7 +253,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                     start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     item {
-                        ScreenHeading("Make a reminder", "Type a request or say it out loud.")
+                        ScreenHeading("New reminder", "Type or speak your reminder.")
                     }
                     if (state.turns.isEmpty()) item {
                         Surface(shape = MaterialTheme.shapes.large,
@@ -243,8 +261,8 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                             Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Icon(Icons.Default.NotificationsActive, contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary)
-                                Text("Just tell me what matters", style = MaterialTheme.typography.titleLarge)
-                                Text("I'll show you the schedule before anything is saved.",
+                                Text("What do you need to remember?", style = MaterialTheme.typography.titleLarge)
+                                Text("Review the times before saving.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
@@ -269,8 +287,11 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                                 Text(if (proposal.action == "delete") "Review deletion" else "Review reminder",
                                     style = MaterialTheme.typography.titleMedium)
                                 Text(proposal.readback, style = MaterialTheme.typography.bodyLarge)
-                                proposal.preview.forEach { Text(dateLabel(it),
-                                    style = MaterialTheme.typography.bodyMedium) }
+                                if (proposal.action == "create" || proposal.action == "edit") {
+                                    Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
+                                    proposal.preview.take(5).forEach { Text(dateLabel(it),
+                                        style = MaterialTheme.typography.bodyMedium) }
+                                }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(enabled = !state.busy,
                                         onClick = { onHaptic(); onConfirm() }) { Text("Confirm") }
@@ -283,7 +304,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                         Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text("Working on that…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Checking the schedule…", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -292,7 +313,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                     Row(verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = draft, onValueChange = { draft = it },
-                            modifier = Modifier.weight(1f), label = { Text("Your request") },
+                            modifier = Modifier.weight(1f), label = { Text("Reminder") },
                             singleLine = true)
                         IconButton(enabled = draft.isNotBlank() && !state.busy, onClick = {
                             onHaptic(); model.send(draft); draft = ""
@@ -302,20 +323,21 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                         modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.Mic, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text(if (recording) "Stop recording" else "Speak a request")
+                        Text(if (recording) "Stop recording" else "Speak reminder")
                     }
-                    Text("You'll confirm any changes before they're saved.",
+                    Text("Review and confirm before saving.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            "Upcoming" -> LazyColumn(Modifier.fillMaxSize().padding(padding),
+            "Upcoming" -> PullToRefreshBox(isRefreshing = state.refreshing,
+                onRefresh = model::refresh, modifier = Modifier.fillMaxSize().padding(padding)) { LazyColumn(Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 val upcoming = state.reminders.filter { it.active && it.title.contains(search, true) }
                     .sortedBy { it.nextDueAt }
                 item {
-                    ScreenHeading("Upcoming", "Everything on your schedule, in one place.")
+                    ScreenHeading("Upcoming", "Scheduled reminders and items needing attention.")
                     Spacer(Modifier.height(18.dp))
                     OutlinedTextField(search, { search = it },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
@@ -332,11 +354,12 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                     onAction = { onHaptic(); model.act(reminder, it) }) }
                 if (upcoming.isEmpty()) item {
                     EmptyState(if (search.isBlank()) "Nothing scheduled yet" else "No matching reminders",
-                        if (search.isBlank()) "Ask for a reminder to get started."
+                        if (search.isBlank()) "Create a reminder to get started."
                         else "Try a different search.")
                 }
-            }
-            "History" -> LazyColumn(Modifier.fillMaxSize().padding(padding),
+            } }
+            "History" -> PullToRefreshBox(isRefreshing = state.refreshing,
+                onRefresh = model::refresh, modifier = Modifier.fillMaxSize().padding(padding)) { LazyColumn(Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 item { ScreenHeading("History", "Past reminders and recent activity.") }
@@ -346,7 +369,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                     onHistory = { model.openHistory(reminder.id) }, onDelete = { deleting = reminder },
                     onAction = { model.act(reminder, it) }) }
                 if (past.isEmpty() && state.events.isEmpty()) item {
-                    EmptyState("A clean slate", "Completed reminders and actions will appear here.")
+                    EmptyState("No history yet", "Completed reminders and actions appear here.")
                 }
                 if (state.events.isNotEmpty()) item {
                     Spacer(Modifier.height(10.dp))
@@ -363,13 +386,29 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                             leadingContent = { Icon(Icons.Default.History, contentDescription = null) })
                     }
                 }
-            }
+            } }
             else -> SettingsScreen(state, Modifier.fillMaxSize().padding(padding).padding(16.dp),
                 onTheme = model::setTheme, onSpoken = model::setSpokenReplies,
                 onNotifications = onNotifications, onExactAlarms = onExactAlarms,
                 onSignOut = model::signOut)
         }
     }
+    if (state.uid != null && state.snoozeReminderId != null) AlertDialog(
+        onDismissRequest = model::closeSnoozeChooser,
+        title = { Text("Remind me later") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("In 10 minutes" to 10, "In 1 hour" to 60,
+                "This evening (6:00 PM)" to 0).forEach { (label, minutes) ->
+                OutlinedButton(onClick = {
+                    if (minutes == 0) model.snooze(10, model.eveningSnoozeAt())
+                    else model.snooze(minutes)
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text(label)
+                }
+            }
+            Text("A regular reminder may arrive sooner.", style = MaterialTheme.typography.bodySmall)
+        } },
+        confirmButton = { TextButton(onClick = model::closeSnoozeChooser) { Text("Cancel") } })
     deleting?.let { reminder -> AlertDialog(onDismissRequest = { deleting = null },
         title = { Text("Delete reminder?") },
         text = { Text("“${reminder.title}” and its records will be permanently deleted.") },
@@ -450,24 +489,30 @@ internal fun ReminderCard(reminder: Reminder, onEdit: () -> Unit, onHistory: () 
             if (reminder.notes.isNotBlank()) Text(reminder.notes,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            reminder.repeatUntilDoneMinutes?.let {
-                Text("Repeats every $it min until Done", style = MaterialTheme.typography.bodySmall,
+            if (reminder.active) {
+                Text("Follows up every ${reminder.repeatUntilDoneMinutes ?: 30} min until Done", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if (reminder.active) Text("UPCOMING TIMES", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             reminder.nextDueAt?.let { due ->
                 Row(verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.Schedule, contentDescription = null, Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.primary)
-                    Text(dateLabel(due), style = MaterialTheme.typography.bodyMedium)
+                    Text("${if (reminder.currentScheduledAt != null) "Follow-up" else "Next"}: ${dateLabel(due)}",
+                        style = MaterialTheme.typography.bodyMedium)
                 }
-                Schedule.preview(reminder.rule, due, 2).forEach {
-                    Text("Then ${dateLabel(it)}", style = MaterialTheme.typography.bodySmall,
+                val regular = if (reminder.currentScheduledAt != null)
+                    Schedule.preview(reminder.rule, reminder.currentScheduledAt, 5)
+                else listOf(due) + Schedule.preview(reminder.rule, due, 4)
+                regular.take(5).forEachIndexed { index, time ->
+                    Text("${if (index == 0) "Scheduled" else "Then"} ${dateLabel(time)}", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (reminder.currentAlert) {
-                Text("Alert sent ${dateLabel(reminder.lastScheduledAt)}",
+                Text("Awaiting Done since ${dateLabel(reminder.lastScheduledAt)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -477,7 +522,7 @@ internal fun ReminderCard(reminder: Reminder, onEdit: () -> Unit, onHistory: () 
                         Text("Done")
                     }
                     FilledTonalButton(onClick = { onAction("snooze") }, modifier = Modifier.weight(1f)) {
-                        Text("Snooze 10 min", maxLines = 1)
+                        Text("Remind me later", maxLines = 1)
                     }
                 }
             }
@@ -553,7 +598,7 @@ private fun WelcomeScreen(modifier: Modifier, onSignIn: () -> Unit) {
                     tint = MaterialTheme.colorScheme.primary)
             }
             Text("Make room for what matters.", style = MaterialTheme.typography.headlineMedium)
-            Text("A calm place to capture reminders, hear them back, and stay on schedule.",
+            Text("Create reminders by typing or speaking. Review the schedule before saving.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth()) {

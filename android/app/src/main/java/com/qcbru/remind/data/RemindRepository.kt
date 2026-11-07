@@ -12,6 +12,7 @@ import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.qcbru.remind.RemindApplication
 import com.qcbru.remind.alerts.AlertScheduler
+import com.qcbru.remind.widget.ReminderWidgetProvider
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -45,6 +46,7 @@ class RemindRepository(private val context: Context) {
                     if (!snapshot.metadata.isFromCache) {
                         store.replaceReminders(uid, reminders)
                         AlertScheduler(context).reschedule(uid)
+                        ReminderWidgetProvider.update(context)
                     }
                     onReminders(if (snapshot.metadata.isFromCache) reminders else store.reminders(uid))
                 }
@@ -58,6 +60,19 @@ class RemindRepository(private val context: Context) {
     }
 
     fun stopObserving() { reminderListener?.remove(); eventListener?.remove() }
+
+    suspend fun refresh(uid: String): Pair<List<Reminder>, List<Map<String, Any?>>> {
+        val owner = database.collection("users").document(uid)
+        val reminders = owner.collection("reminders").get(Source.SERVER).await().documents
+            .mapNotNull { runCatching { Reminder.fromDocument(it) }.getOrNull() }
+        val events = owner.collection("events").orderBy("at", Query.Direction.DESCENDING)
+            .limit(100).get(Source.SERVER).await().documents
+            .map { it.data.orEmpty() + ("id" to it.id) }
+        store.replaceReminders(uid, reminders)
+        AlertScheduler(context).reschedule(uid)
+        ReminderWidgetProvider.update(context)
+        return store.reminders(uid) to events
+    }
 
     suspend fun initialize() { call("initializeConversations") }
 
@@ -93,6 +108,7 @@ class RemindRepository(private val context: Context) {
         if (doc.exists()) store.saveReminder(uid, Reminder.fromDocument(doc))
         else store.removeReminder(uid, id)
         AlertScheduler(context).reschedule(uid)
+        ReminderWidgetProvider.update(context)
     }
 
     suspend fun discardDraft(id: String) { call("deleteConversation", mapOf("conversationId" to id, "draftOnly" to true)) }
@@ -114,8 +130,10 @@ class RemindRepository(private val context: Context) {
         if (uid != null) {
             AlertScheduler(context).cancelAll(uid)
             store.clearAccount(uid)
+            ReminderWidgetProvider.update(context)
         }
         preferences.edit().clear().apply()
+        ReminderWidgetProvider.update(context)
         FirebaseMessaging.getInstance().deleteToken().await()
         auth.signOut()
     }
@@ -128,19 +146,23 @@ class RemindRepository(private val context: Context) {
             store.clearAccount(old)
         }
         preferences.edit().putString("uid", uid).apply()
+        ReminderWidgetProvider.update(context)
     }
 
-    fun queueAction(uid: String, reminderId: String, occurrenceId: String, action: String, local: Boolean): PendingAction {
-        val pending = PendingAction("${occurrenceId}_${action}", uid, reminderId, occurrenceId, action,
-            if (action == "snooze") 10 else null, local)
+    fun queueAction(uid: String, reminderId: String, occurrenceId: String, action: String,
+        local: Boolean, snoozeMinutes: Int = 10, snoozeAt: Long? = null): PendingAction {
+        val pending = PendingAction(UUID.randomUUID().toString(), uid, reminderId, occurrenceId, action,
+            if (action == "snooze") snoozeMinutes else null, snoozeAt, local)
         store.queue(pending)
         val manager = context.getSystemService(NotificationManager::class.java)
         store.alertIds(uid, occurrenceId).forEach { manager.cancel(it.hashCode()) }
         store.reminder(uid, reminderId)?.let { reminder ->
-            store.saveReminder(uid, LocalActions.apply(reminder, occurrenceId, action, System.currentTimeMillis()))
+            store.saveReminder(uid, LocalActions.apply(reminder, occurrenceId, action,
+                System.currentTimeMillis(), snoozeMinutes, snoozeAt))
         }
         context.sendBroadcast(Intent(LOCAL_CHANGE_ACTION).setPackage(context.packageName))
         AlertScheduler(context).reschedule(uid)
+        ReminderWidgetProvider.update(context)
         ActionSync.enqueue(context)
         return pending
     }

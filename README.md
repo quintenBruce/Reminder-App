@@ -39,9 +39,9 @@ Delivery is best effort. Chrome is not required. A notification action opens the
 
 The first upgraded load for each account permanently removes the previous long dashboard conversation. Existing reminder records remain.
 
-Upcoming groups each reminder into a parent with Edit and Delete and up to three future dates. Only an alert accepted by FCM gets Done and Snooze 10 min. **Done** acknowledges that occurrence and stops its repeat-until-Done nudges; recurring reminders keep their next regular occurrence. Snooze delays the current occurrence. Swiping a phone notification away hides it without changing the reminder.
+Every delivered occurrence needs **Done** to acknowledge it. Unacknowledged alerts follow up every 30 minutes by default; an explicit repeat-until-Done interval overrides that default. The next regular occurrence replaces an older unanswered one. Android offers 10 minutes, 1 hour, and 6:00 p.m. local time as snooze choices. Swiping a phone notification away does not acknowledge it.
 
-Upcoming lists only reminders with a scheduled next alert. A one-time reminder whose alert was sent and has no next time appears in History as **Alert sent**, where Done or Snooze remain available. This also applies to a recurrence after its final scheduled alert.
+Upcoming retains a one-time or final scheduled occurrence until it is acknowledged. Android shows the next five regular scheduled times separately from follow-ups and has a home-screen widget for upcoming and unanswered reminders.
 
 Delete is permanent and requires confirmation. It stops scheduling first, then removes the reminder and its occurrence, action, event, proposal, and linked conversation records in retryable pages. Cloud Logs remain. An already displayed or in-flight phone notification may remain.
 

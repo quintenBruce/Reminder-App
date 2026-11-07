@@ -10,6 +10,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.qcbru.remind.MainActivity
+import com.qcbru.remind.R
 import com.qcbru.remind.RemindApplication
 
 object AlertNotifier {
@@ -22,20 +23,29 @@ object AlertNotifier {
         val scheduledAt = occurrenceId.removePrefix("${reminderId}_").toLongOrNull()
         if (reminderId != "test" && (store.hasPendingAction(uid, occurrenceId) ||
                 (scheduledAt != null && reminder?.lastAcknowledgedScheduledAt == scheduledAt))) return false
-        val gap = if (reminderId == "test") 0L else if (reminder?.repeatUntilDoneMinutes != null ||
-            (scheduledAt != null && reminder?.currentScheduledAt == scheduledAt))
-            120_000L else Long.MAX_VALUE
+        val gap = if (reminderId == "test") 0L else 120_000L
         if (!store.claimAlert(uid, alertId, occurrenceId, System.currentTimeMillis(), source, gap)) return false
         val open = PendingIntent.getActivity(context, alertId.hashCode(), Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("reminderId", reminderId)
         }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(context, "reminders")
-            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title).setContentText(body.takeIf { it.isNotBlank() })
             .setPriority(NotificationCompat.PRIORITY_HIGH).setAutoCancel(true)
             .setContentIntent(open)
-        if (reminderId != "test") for (action in listOf("done", "snooze")) {
+        if (reminderId != "test") for (action in listOf("done", "later")) {
+            if (action == "later") {
+                val later = Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    data = android.net.Uri.parse("remind://later/$alertId")
+                    putExtra("uid", uid); putExtra("reminderId", reminderId)
+                    putExtra("occurrenceId", occurrenceId)
+                }
+                notification.addAction(0, "Remind me later", PendingIntent.getActivity(context,
+                    alertId.hashCode(), later, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                continue
+            }
             val intent = Intent(context, ActionReceiver::class.java).apply {
                 this.action = "com.qcbru.remind.$action"
                 data = android.net.Uri.parse("remind://action/$alertId/$action")
@@ -45,7 +55,7 @@ object AlertNotifier {
             }
             val pending = PendingIntent.getBroadcast(context, 0, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            notification.addAction(0, if (action == "done") "Done" else "Snooze 10 min", pending)
+            notification.addAction(0, "Done", pending)
         }
         context.getSystemService(NotificationManager::class.java).notify(alertId.hashCode(), notification.build())
         return true

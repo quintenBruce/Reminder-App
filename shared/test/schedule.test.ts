@@ -121,14 +121,24 @@ describe('reminder actions and delivery', () => {
     expect(result.nextDueAt).toBe(scheduled + 11 * 60_000);
   });
 
-  it('snoozing an interval occurrence does not skip the next regular occurrence', () => {
+  it('uses an exact evening snooze time', () => {
+    const due = ms('2026-11-07T15:00:00Z');
+    const evening = ms('2026-11-08T00:00:00Z');
+    const r = reminder({ rule: { kind: 'once', at: '2026-11-07T15:00:00Z' },
+      lastScheduledAt: due, lastSentAt: due, currentScheduledAt: due });
+    expect(applyReminderAction(r, 'snooze', due + 1000, 10, `r1_${due}`, false, evening).nextDueAt)
+      .toBe(evening);
+  });
+
+  it('replaces an unanswered interval occurrence at the next regular time', () => {
     const due = ms('2026-10-11T09:00:00-05:00');
     const r = reminder({ rule: { kind: 'interval', startAt: '2026-10-11T09:00:00-05:00', everyMinutes: 5 },
       lastScheduledAt: due, lastSentAt: due + 1000, nextDueAt: due + 300_000 });
     const snoozed = reminder({ ...r, ...applyReminderAction(r, 'snooze', due + 2000, 10, `r1_${due}`) });
-    expect(snoozed.nextDueAt).toBe(due + 602_000);
-    const sent = afterDelivery(snoozed, due, due + 603_000, true);
-    expect(sent.update.nextDueAt).toBe(due + 300_000);
+    expect(snoozed.nextDueAt).toBe(due + 300_000);
+    expect(snoozed.currentScheduledAt).toBeNull();
+    const sent = afterDelivery(snoozed, due + 300_000, due + 301_000, true);
+    expect(sent.update.nextDueAt).toBe(due + 600_000);
   });
 
   it('Done on a delivered notification does not skip the next base occurrence', () => {
@@ -162,15 +172,29 @@ describe('reminder actions and delivery', () => {
     expect(result.occurrenceStatus).toBe('retry');
   });
 
-  it('moves a sent final occurrence out of Upcoming without breaking its actions', () => {
+  it('keeps a sent final occurrence active until Done', () => {
     const due = ms('2026-10-11T14:00:00-05:00');
     const sent = afterDelivery(reminder(), due, due + 1000, true);
-    expect(sent.update.nextDueAt).toBeNull();
+    expect(sent.update.nextDueAt).toBe(due + 1_000 + 30 * 60_000);
     const delivered = reminder(sent.update);
-    expect(reminderSection(delivered)).toBe('history');
+    expect(reminderSection(delivered)).toBe('upcoming');
     expect(reminderGroup(delivered, due + 2000).alert?.occurrenceId).toBe(`r1_${due}`);
     expect(applyReminderAction(delivered, 'done', due + 2000, null, `r1_${due}`)).toMatchObject({ status: 'completed' });
     expect(applyReminderAction(delivered, 'snooze', due + 2000, 10, `r1_${due}`)).toMatchObject({ nextDueAt: due + 602000 });
+  });
+
+  it('keeps an endless daily schedule and replaces a nudge with the next day', () => {
+    const first = ms('2026-11-01T09:00:00-06:00');
+    const rule = { kind: 'daily' as const, startAt: '2026-11-01T09:00:00-06:00',
+      timeZone: 'America/Chicago', hour: 9, minute: 0 };
+    expect(previewOccurrences(rule, first, 5)).toHaveLength(5);
+    const r = reminder({ rule, nextDueAt: first });
+    const sent = afterDelivery(r, first, first + 1000, true);
+    expect(sent.update.nextDueAt).toBe(first + 1000 + 30 * 60_000);
+    const tomorrow = nextOccurrence(rule, first)!;
+    const late = afterDelivery(r, first, tomorrow - 10 * 60_000, true);
+    expect(late.update.nextDueAt).toBe(tomorrow);
+    expect(late.update.currentScheduledAt).toBeNull();
   });
 
   it('groups one-time, daily, finite, and repeat-until-Done schedules', () => {

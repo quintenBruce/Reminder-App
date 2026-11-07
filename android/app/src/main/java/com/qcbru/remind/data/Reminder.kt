@@ -58,6 +58,7 @@ data class PendingAction(
     val occurrenceId: String,
     val action: String,
     val snoozeMinutes: Int?,
+    val snoozeAt: Long?,
     val localDelivery: Boolean,
 )
 

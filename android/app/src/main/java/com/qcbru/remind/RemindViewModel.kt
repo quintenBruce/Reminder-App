@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.TimeZone
+import java.time.ZonedDateTime
+import java.time.temporal.ChronoUnit
 
 data class RemindUiState(
     val uid: String? = null,
@@ -38,6 +40,9 @@ data class RemindUiState(
     val sessions: List<Pair<String, Long>> = emptyList(),
     val selectedSession: String? = null,
     val savedTurns: List<Pair<String, String>> = emptyList(),
+    val snoozeReminderId: String? = null,
+    val snoozeOccurrenceId: String? = null,
+    val refreshing: Boolean = false,
 )
 
 class RemindViewModel(application: Application) : AndroidViewModel(application) {
@@ -76,6 +81,8 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
             { events -> mutable.update { it.copy(events = events) } }, { error -> notice(error) })
         viewModelScope.launch {
             runCatching { repo.initialize() }.onFailure { notice(it.message ?: "Could not initialize history") }
+            runCatching { repo.call("ensureAcknowledgmentPolicy") }
+                .onFailure { notice(it.message ?: "Could not update reminder follow-ups") }
             if (previous != null) runCatching { repo.discardDraft(previous) }
             if (notificationsAllowed()) PushSync.enqueue(getApplication())
             ActionSync.enqueue(getApplication())
@@ -88,6 +95,19 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
 
     fun refreshLocal() { mutable.value.uid?.let { uid -> mutable.update { it.copy(reminders = store.reminders(uid)) } } }
     fun onResume() { refreshLocal(); if (mutable.value.uid != null && notificationsAllowed()) PushSync.enqueue(getApplication()) }
+
+    fun refresh() {
+        val uid = mutable.value.uid ?: return
+        if (mutable.value.refreshing) return
+        mutable.update { it.copy(refreshing = true) }
+        viewModelScope.launch {
+            try {
+                val (reminders, events) = repo.refresh(uid)
+                if (mutable.value.uid == uid) mutable.update { it.copy(reminders = reminders, events = events) }
+            } catch (_: Exception) { notice("Could not refresh. Showing saved reminders.") }
+            finally { mutable.update { it.copy(refreshing = false) } }
+        }
+    }
 
     fun setTab(tab: String) { mutable.update { it.copy(tab = tab) } }
     fun setTheme(theme: String) {
@@ -164,11 +184,41 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun act(reminder: Reminder, action: String) {
+        if (action == "snooze") {
+            reminder.occurrenceId?.let { openSnoozeChooser(reminder.id, it) }
+            return
+        }
         val uid = mutable.value.uid ?: return
         val occurrence = reminder.occurrenceId ?: return
-        repo.queueAction(uid, reminder.id, occurrence, action, true)
+        val local = store.alertIds(uid, occurrence).any { store.isLocalAlert(uid, it) }
+        repo.queueAction(uid, reminder.id, occurrence, action, local)
         mutable.update { it.copy(reminders = store.reminders(uid)) }
-        notice(if (action == "done") "Marked done" else "Snoozed 10 minutes")
+        notice(if (action == "done") "Marked done" else "Reminding you later")
+    }
+
+    fun openSnoozeChooser(reminderId: String, occurrenceId: String) {
+        mutable.update { it.copy(snoozeReminderId = reminderId, snoozeOccurrenceId = occurrenceId) }
+    }
+
+    fun closeSnoozeChooser() { mutable.update { it.copy(snoozeReminderId = null, snoozeOccurrenceId = null) } }
+
+    fun snooze(minutes: Int, exactAt: Long? = null) {
+        val uid = mutable.value.uid ?: return
+        val id = mutable.value.snoozeReminderId ?: return
+        val occurrence = mutable.value.snoozeOccurrenceId ?: return
+        if (store.reminder(uid, id) == null) return
+        val local = store.alertIds(uid, occurrence).any { store.isLocalAlert(uid, it) }
+        repo.queueAction(uid, id, occurrence, "snooze", local, minutes, exactAt)
+        closeSnoozeChooser()
+        refreshLocal()
+        notice("Reminding you later")
+    }
+
+    fun eveningSnoozeAt(): Long {
+        val now = ZonedDateTime.now()
+        var evening = now.truncatedTo(ChronoUnit.DAYS).plusHours(18)
+        if (!evening.isAfter(now)) evening = evening.plusDays(1)
+        return evening.toInstant().toEpochMilli()
     }
 
     fun delete(reminder: Reminder) {

@@ -1,6 +1,7 @@
 package com.qcbru.remind
 
 import com.qcbru.remind.data.LocalActions
+import com.qcbru.remind.data.Acknowledgment
 import com.qcbru.remind.data.Reminder
 import com.qcbru.remind.data.Schedule
 import org.json.JSONObject
@@ -96,5 +97,31 @@ class ScheduleTest {
             "active", due, null, null, null, null, null, 1, due)
         assertEquals(reminder, LocalActions.apply(reminder, "r3_invalid", "snooze", due))
         assertEquals(reminder, LocalActions.apply(reminder, "other_$due", "done", due))
+    }
+
+    @Test fun unansweredOccurrencesRepeatAndGiveWayToTheNextRegularTime() {
+        val first = ms("2026-11-01T15:00:00Z")
+        val daily = rule("""{"kind":"daily","startAt":"2026-11-01T09:00:00-06:00","timeZone":"America/Chicago","hour":9,"minute":0}""")
+        val reminder = Reminder("r4", "Vitamins", "", daily, "active", first, null,
+            null, null, null, null, 1, first)
+        assertEquals(first + 30 * 60_000L, Acknowledgment.next(reminder, first, first).first)
+        val nextDay = ms("2026-11-02T15:00:00Z")
+        assertEquals(nextDay to null, Acknowledgment.next(reminder, first, nextDay - 10 * 60_000L))
+        val pending = reminder.copy(currentScheduledAt = first, nextDueAt = nextDay)
+        assertEquals(nextDay, Acknowledgment.scheduledAt(pending, nextDay))
+        assertEquals(5, Schedule.preview(daily, nextDay, 5).size)
+    }
+
+    @Test fun snoozeNeverReschedulesAReplacedOccurrenceInThePast() {
+        val first = ms("2026-11-01T15:00:00Z")
+        val daily = rule("""{"kind":"daily","startAt":"2026-11-01T09:00:00-06:00","timeZone":"America/Chicago","hour":9,"minute":0}""")
+        val reminder = Reminder("r5", "Vitamins", "", daily, "active", first + 30 * 60_000L,
+            first, first, first, null, null, 1, first)
+        val now = ms("2026-11-03T16:00:00Z")
+        val snoozed = LocalActions.apply(reminder, "r5_$first", "snooze", now, 60)
+        assertEquals(now + 60 * 60_000L, snoozed.nextDueAt)
+        val evening = now + 2 * 60 * 60_000L + 1_234L
+        assertEquals(evening, LocalActions.apply(reminder, "r5_$first", "snooze", now,
+            10, evening).nextDueAt)
     }
 }

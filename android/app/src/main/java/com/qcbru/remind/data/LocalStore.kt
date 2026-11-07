@@ -6,13 +6,15 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONObject
 
-class LocalStore(context: Context) : SQLiteOpenHelper(context, "remind.db", null, 1) {
+class LocalStore(context: Context) : SQLiteOpenHelper(context, "remind.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE reminders(uid TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(uid,id))")
         db.execSQL("CREATE TABLE alerts(uid TEXT NOT NULL, alert_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, shown_at INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY(uid,alert_id))")
-        db.execSQL("CREATE TABLE actions(request_id TEXT PRIMARY KEY, uid TEXT NOT NULL, reminder_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, action TEXT NOT NULL, snooze_minutes INTEGER, local_delivery INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE actions(request_id TEXT PRIMARY KEY, uid TEXT NOT NULL, reminder_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, action TEXT NOT NULL, snooze_minutes INTEGER, snooze_at INTEGER, local_delivery INTEGER NOT NULL)")
     }
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) db.execSQL("ALTER TABLE actions ADD COLUMN snooze_at INTEGER")
+    }
 
     fun replaceReminders(uid: String, reminders: List<Reminder>) {
         val db = writableDatabase
@@ -93,15 +95,17 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "remind.db", null
             put("request_id", action.requestId); put("uid", action.uid); put("reminder_id", action.reminderId)
             put("occurrence_id", action.occurrenceId); put("action", action.action)
             put("snooze_minutes", action.snoozeMinutes)
+            put("snooze_at", action.snoozeAt)
             put("local_delivery", if (action.localDelivery) 1 else 0)
         }, SQLiteDatabase.CONFLICT_IGNORE)
     }
 
     fun pending(uid: String): List<PendingAction> {
         val result = mutableListOf<PendingAction>()
-        readableDatabase.rawQuery("SELECT request_id, reminder_id, occurrence_id, action, snooze_minutes, local_delivery FROM actions WHERE uid=?", arrayOf(uid)).use { cursor ->
+        readableDatabase.rawQuery("SELECT request_id, reminder_id, occurrence_id, action, snooze_minutes, local_delivery, snooze_at FROM actions WHERE uid=?", arrayOf(uid)).use { cursor ->
             while (cursor.moveToNext()) result += PendingAction(cursor.getString(0), uid, cursor.getString(1),
-                cursor.getString(2), cursor.getString(3), if (cursor.isNull(4)) null else cursor.getInt(4), cursor.getInt(5) == 1)
+                cursor.getString(2), cursor.getString(3), if (cursor.isNull(4)) null else cursor.getInt(4),
+                if (cursor.isNull(6)) null else cursor.getLong(6), cursor.getInt(5) == 1)
         }
         return result
     }

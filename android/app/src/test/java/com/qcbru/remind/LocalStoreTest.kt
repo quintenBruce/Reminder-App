@@ -1,6 +1,7 @@
 package com.qcbru.remind
 
 import android.app.Application
+import android.content.Context
 import com.qcbru.remind.data.LocalStore
 import com.qcbru.remind.data.PendingAction
 import com.qcbru.remind.data.Reminder
@@ -55,7 +56,7 @@ class LocalStoreTest {
     @Test fun queuesActionsAndPreservesLocalOverlayUntilSync() {
         val original = reminder("r1")
         store.replaceReminders("alice", listOf(original))
-        val action = PendingAction("r1_1_done", "alice", "r1", "r1_1", "done", null, true)
+        val action = PendingAction("r1_1_done", "alice", "r1", "r1_1", "done", null, null, true)
         store.queue(action); store.queue(action)
         assertTrue(store.hasPendingAction("alice", "r1_1"))
         val local = original.copy(title = "Local title")
@@ -67,5 +68,19 @@ class LocalStoreTest {
         assertFalse(store.hasPendingAction("alice", "r1_1"))
         store.replaceReminders("alice", listOf(original))
         assertEquals("r1", store.reminder("alice", "r1")?.title)
+    }
+
+    @Test fun upgradesQueuedActionsWithoutLosingThem() {
+        val context = RuntimeEnvironment.getApplication()
+        store.close()
+        context.deleteDatabase("remind.db")
+        context.openOrCreateDatabase("remind.db", Context.MODE_PRIVATE, null).use { db ->
+            db.execSQL("CREATE TABLE actions(request_id TEXT PRIMARY KEY, uid TEXT NOT NULL, reminder_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, action TEXT NOT NULL, snooze_minutes INTEGER, local_delivery INTEGER NOT NULL)")
+            db.execSQL("INSERT INTO actions VALUES('old','alice','r1','r1_1','snooze',10,1)")
+            db.version = 1
+        }
+        store = LocalStore(context)
+        assertEquals(listOf(PendingAction("old", "alice", "r1", "r1_1", "snooze", 10, null, true)),
+            store.pending("alice"))
     }
 }

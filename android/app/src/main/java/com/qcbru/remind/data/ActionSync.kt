@@ -23,6 +23,7 @@ class ActionSync(context: Context, params: WorkerParameters) : CoroutineWorker(c
                     "occurrenceId" to pending.occurrenceId,
                     "action" to pending.action,
                     "snoozeMinutes" to pending.snoozeMinutes,
+                    "snoozeAt" to pending.snoozeAt,
                     "requestId" to pending.requestId,
                     "deliverySource" to if (pending.localDelivery) "local" else "push",
                 ))

@@ -1,0 +1,32 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:padding="16dp" android:background="@drawable/widget_background">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Remind" android:textColor="#43E6E5" android:textSize="18sp" android:textStyle="bold" />
+    <TextView android:id="@+id/widget_status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Upcoming and needs attention" android:textColor="#DCE9F1" android:textSize="12sp" />
+    <LinearLayout android:id="@+id/widget_row_1" style="@style/WidgetRow">
+        <TextView android:id="@+id/widget_title_1" style="@style/WidgetTitle" />
+        <TextView android:id="@+id/widget_detail_1" style="@style/WidgetDetail" />
+        <LinearLayout style="@style/WidgetActions">
+            <TextView android:id="@+id/widget_done_1" style="@style/WidgetAction" android:text="Done" />
+            <TextView android:id="@+id/widget_later_1" style="@style/WidgetAction" android:text="Later" />
+        </LinearLayout>
+    </LinearLayout>
+    <LinearLayout android:id="@+id/widget_row_2" style="@style/WidgetRow">
+        <TextView android:id="@+id/widget_title_2" style="@style/WidgetTitle" />
+        <TextView android:id="@+id/widget_detail_2" style="@style/WidgetDetail" />
+        <LinearLayout style="@style/WidgetActions">
+            <TextView android:id="@+id/widget_done_2" style="@style/WidgetAction" android:text="Done" />
+            <TextView android:id="@+id/widget_later_2" style="@style/WidgetAction" android:text="Later" />
+        </LinearLayout>
+    </LinearLayout>
+    <LinearLayout android:id="@+id/widget_row_3" style="@style/WidgetRow">
+        <TextView android:id="@+id/widget_title_3" style="@style/WidgetTitle" />
+        <TextView android:id="@+id/widget_detail_3" style="@style/WidgetDetail" />
+        <LinearLayout style="@style/WidgetActions">
+            <TextView android:id="@+id/widget_done_3" style="@style/WidgetAction" android:text="Done" />
+            <TextView android:id="@+id/widget_later_3" style="@style/WidgetAction" android:text="Later" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

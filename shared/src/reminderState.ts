@@ -1,6 +1,7 @@
 import { nextOccurrence, type ReminderRecord } from './schedule';
 
 export type OccurrenceAction = 'done' | 'dismiss' | 'snooze';
+export const DEFAULT_ACK_MINUTES = 30;
 
 export function reminderSection(reminder: ReminderRecord): 'upcoming' | 'history' {
   return reminder.status === 'active' && reminder.nextDueAt != null ? 'upcoming' : 'history';
@@ -54,6 +55,7 @@ export function applyReminderAction(
   snoozeMinutes: number | null,
   occurrenceId?: string,
   allowLocallyDelivered = false,
+  snoozeAt?: number,
 ): Partial<ReminderRecord> {
   const occurrenceAt = occurrenceId?.startsWith(`${reminder.id}_`)
     ? Number(occurrenceId.slice(reminder.id.length + 1)) : null;
@@ -71,7 +73,7 @@ export function applyReminderAction(
     const deliveredAlert = occurrenceAt !== null && occurrenceAt === reminder.lastScheduledAt && reminder.currentScheduledAt === null;
     if (!deliveredAlert) {
       const target = reminder.currentScheduledAt ?? reminder.nextDueAt ?? reminder.lastScheduledAt;
-      if (target != null) update.nextDueAt = nextOccurrence(reminder.rule, target);
+      if (target != null) update.nextDueAt = nextOccurrence(reminder.rule, Math.max(target, now));
     }
     update.currentScheduledAt = null;
     if (occurrenceAt != null || reminder.lastScheduledAt != null) update.lastAcknowledgedScheduledAt = occurrenceAt ?? reminder.lastScheduledAt;
@@ -79,11 +81,18 @@ export function applyReminderAction(
   } else if (action === 'dismiss') {
     update.dismissedAt = now;
   } else {
-    if (!Number.isInteger(snoozeMinutes) || (snoozeMinutes ?? 0) < 5 || (snoozeMinutes ?? 0) > 525_600) {
+    if (snoozeAt == null && (!Number.isInteger(snoozeMinutes) || (snoozeMinutes ?? 0) < 5 || (snoozeMinutes ?? 0) > 525_600)) {
       throw new Error('Snooze must be between five minutes and one year.');
     }
-    update.nextDueAt = now + snoozeMinutes! * 60_000;
-    update.currentScheduledAt = occurrenceAt ?? reminder.currentScheduledAt ??
+    if (snoozeAt != null && (!Number.isFinite(snoozeAt) || snoozeAt < now - 60_000 ||
+        snoozeAt > now + 366 * 24 * 60 * 60_000)) throw new Error('Invalid snooze time.');
+    const scheduledAt = occurrenceAt ?? reminder.currentScheduledAt ?? reminder.lastScheduledAt ?? reminder.nextDueAt;
+    const firstRegular = scheduledAt == null ? null : nextOccurrence(reminder.rule, scheduledAt);
+    const regular = firstRegular != null && firstRegular <= now
+      ? nextOccurrence(reminder.rule, now) : firstRegular;
+    const snoozedAt = snoozeAt == null ? now + snoozeMinutes! * 60_000 : Math.max(now + 1_000, snoozeAt);
+    update.nextDueAt = regular != null && regular <= snoozedAt ? regular : snoozedAt;
+    update.currentScheduledAt = regular != null && regular <= snoozedAt ? null : occurrenceAt ?? reminder.currentScheduledAt ??
       ((reminder.lastSentAt ?? 0) > now - 60 * 60_000
         ? reminder.lastScheduledAt ?? reminder.nextDueAt : reminder.nextDueAt);
   }
@@ -98,16 +107,18 @@ export function afterDelivery(
 ): { update: Partial<ReminderRecord>; occurrenceStatus: 'sent' | 'retry' | 'missed' } {
   const failures = delivered ? 0 : (reminder.failedAttempts ?? 0) + 1;
   const retryMinutes = Math.min(30, 2 ** Math.min(failures - 1, 5));
+  const regular = nextOccurrence(reminder.rule, scheduledAt);
+  const nextRegular = regular != null && regular <= finishedAt
+    ? nextOccurrence(reminder.rule, finishedAt) : regular;
+  const nudgeAt = finishedAt + (reminder.repeatUntilDoneMinutes ?? DEFAULT_ACK_MINUTES) * 60_000;
   const nextDueAt = delivered
-    ? (reminder.repeatUntilDoneMinutes
-      ? finishedAt + reminder.repeatUntilDoneMinutes * 60_000
-      : nextOccurrence(reminder.rule, reminder.lastSentAt != null && reminder.lastScheduledAt === scheduledAt
-        ? scheduledAt : Math.max(scheduledAt, finishedAt)))
+    ? nextRegular != null && nextRegular <= nudgeAt ? nextRegular : nudgeAt
     : finishedAt + retryMinutes * 60_000;
+  const repeatingThisOccurrence = delivered && (nextRegular == null || nudgeAt < nextRegular);
   return {
     update: {
       nextDueAt,
-      currentScheduledAt: delivered && !reminder.repeatUntilDoneMinutes ? null : scheduledAt,
+      currentScheduledAt: repeatingThisOccurrence || !delivered ? scheduledAt : null,
       ...(delivered ? { lastSentAt: finishedAt, lastScheduledAt: scheduledAt } : {}),
       failedAttempts: failures,
       leaseUntil: 0,

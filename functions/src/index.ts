@@ -258,7 +258,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   const title = d.action === 'create' ? textValue(d.title || pending?.title, 200) : (d.title ? textValue(d.title, 200) : candidate?.title || null);
   const notes = d.notes === null ? candidate?.notes ?? pending?.notes ?? '' : stringValue(d.notes, 1000);
   const readback = d.action === 'create' || d.action === 'edit'
-    ? `${d.action === 'create' ? 'Create' : 'Change'} “${title}”${notes ? ` (${notes})` : ''}: ${summarize(rule!, preview, zone)}${nudgeMinutes ? `; repeat every ${nudgeMinutes} minutes until Done` : ''}. Confirm?`
+    ? `${d.action === 'create' ? 'Create' : 'Change'} “${title}”${notes ? ` (${notes})` : ''}: ${summarize(rule!, preview, zone)}; follow up every ${nudgeMinutes ?? 30} minutes until Done. Confirm?`
     : d.action === 'delete' ? `Permanently delete “${candidate!.title}” and its reminder records? This cannot be undone. Confirm?`
       : `${d.action === 'snooze' ? `Snooze “${candidate!.title}” for ${d.snoozeMinutes} minutes` : `${d.action[0].toUpperCase()}${d.action.slice(1)} “${candidate!.title}”`}. Confirm?`;
   const proposal: Proposal = {
@@ -276,7 +276,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   return { conversationId, reply: readback, proposal };
 }));
 
-async function applyAction(uid: string, reminderId: string, action: 'done' | 'dismiss' | 'snooze', snoozeMinutes: number | null, requestId: string, expectedVersion?: number | null, occurrenceId?: string, conversationId?: string, localDelivery = false) {
+async function applyAction(uid: string, reminderId: string, action: 'done' | 'dismiss' | 'snooze', snoozeMinutes: number | null, requestId: string, expectedVersion?: number | null, occurrenceId?: string, conversationId?: string, localDelivery = false, snoozeAt?: number) {
   const ref = root(uid).collection('reminders').doc(reminderId);
   const idempotency = root(uid).collection('actions').doc(requestId);
   const now = Date.now();
@@ -293,7 +293,7 @@ async function applyAction(uid: string, reminderId: string, action: 'done' | 'di
     if (r.status !== 'active') throw new HttpsError('failed-precondition', 'Reminder is canceled.');
     if (expectedVersion != null && r.version !== expectedVersion) throw new HttpsError('failed-precondition', 'Reminder changed. Please ask again.');
     let update: Partial<ReminderRecord>;
-    try { update = applyReminderAction(r, action, now, snoozeMinutes, occurrenceId, localDelivery); }
+    try { update = applyReminderAction(r, action, now, snoozeMinutes, occurrenceId, localDelivery, snoozeAt); }
     catch (error) { throw new HttpsError('failed-precondition', error instanceof Error ? error.message : 'Invalid occurrence action.'); }
     tx.update(ref, action === 'done' ? { ...update, dismissedAt: FieldValue.delete() } : update);
     const alertAt = occurrenceId?.startsWith(`${reminderId}_`)
@@ -325,7 +325,8 @@ export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, r
   const requestId = textValue(request.data?.requestId, 100);
   const localDelivery = request.data?.deliverySource === 'local';
   const result = await applyAction(uid, reminderId, action, request.data?.snoozeMinutes ?? null, requestId, null,
-    stringValue(request.data?.occurrenceId, 150) || undefined, undefined, localDelivery);
+    stringValue(request.data?.occurrenceId, 150) || undefined, undefined, localDelivery,
+    request.data?.snoozeAt == null ? undefined : Number(request.data.snoozeAt));
   trace.stage('action.committed', { reminderId, requestId, action });
   return result;
 }));
@@ -548,6 +549,37 @@ export const initializeConversations = onCall({ region, enforceAppCheck: true, t
   return { deleted };
 }));
 
+export const ensureAcknowledgmentPolicy = onCall({ region, enforceAppCheck: true, timeoutSeconds: 540 }, request => observe('ensureAcknowledgmentPolicy', request.auth?.uid, async trace => {
+  const uid = requireGoogleUser(request);
+  const reminders = await root(uid).collection('reminders').get();
+  let updated = 0;
+  for (const doc of reminders.docs) {
+    await db.runTransaction(async tx => {
+      const snap = await tx.get(doc.ref);
+      if (!snap.exists || snap.get('ackPolicyVersion') === 1) return;
+      const r = record(snap.data()!, snap.id);
+      const changes: Partial<ReminderRecord> & { ackPolicyVersion: number } = { ackPolicyVersion: 1 };
+      if (r.status === 'active' && r.lastSentAt != null && r.lastScheduledAt != null &&
+          r.lastAcknowledgedScheduledAt !== r.lastScheduledAt && r.repeatUntilDoneMinutes == null) {
+        const now = Date.now();
+        const nudgeAt = Math.max(now, r.lastSentAt + 30 * 60_000);
+        const regular = nextOccurrence(r.rule, r.lastScheduledAt);
+        const next = regular != null && regular <= nudgeAt ? regular : nudgeAt;
+        if (r.nextDueAt == null || next < r.nextDueAt) {
+          changes.nextDueAt = Math.max(now, next);
+          changes.currentScheduledAt = regular != null && regular <= nudgeAt ? null : r.lastScheduledAt;
+          changes.version = r.version + 1;
+          changes.updatedAt = now;
+        }
+      }
+      tx.update(doc.ref, changes);
+      updated++;
+    });
+  }
+  trace.stage('reminders.checked', { count: reminders.size, updated });
+  return { updated };
+}));
+
 export const cleanupDraftConversations = onSchedule({ schedule: '0 3 * * *', timeZone: 'UTC', region, maxInstances: 1 }, async () => {
   const cutoff = Date.now() - 24 * 60 * 60_000;
   let deleted = 0;
@@ -601,7 +633,9 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
     });
     if (!claimed) { skippedCount++; continue; }
     claimedCount++;
-    const scheduledAt = claimed.currentScheduledAt ?? claimed.nextDueAt!;
+    const nextRegular = claimed.currentScheduledAt == null ? null : nextOccurrence(claimed.rule, claimed.currentScheduledAt);
+    const scheduledAt = nextRegular != null && nextRegular <= now ? nextRegular :
+      claimed.currentScheduledAt ?? claimed.nextDueAt!;
     const occurrenceId = `${claimed.id}_${scheduledAt}`;
     info('dispatchDue.claimed', { operation: 'dispatchDue', operationId, uid, reminderId: claimed.id, occurrenceId, scheduledAt });
     const devices = await root(uid).collection('devices').get();

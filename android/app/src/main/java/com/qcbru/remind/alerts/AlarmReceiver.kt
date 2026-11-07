@@ -6,6 +6,8 @@ import android.content.Intent
 import com.qcbru.remind.data.RemindRepository
 import com.qcbru.remind.RemindApplication
 import com.qcbru.remind.data.Schedule
+import com.qcbru.remind.data.Acknowledgment
+import com.qcbru.remind.widget.ReminderWidgetProvider
 
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -16,20 +18,19 @@ class AlarmReceiver : BroadcastReceiver() {
         val store = (context.applicationContext as RemindApplication).store
         val reminder = store.reminder(uid, id) ?: return
         if (!reminder.active || reminder.nextDueAt != due) return
-        val scheduledAt = reminder.currentScheduledAt ?: due
+        val scheduledAt = Acknowledgment.scheduledAt(reminder, System.currentTimeMillis())
         val occurrenceId = "${id}_$scheduledAt"
         val alertId = "${id}_$due"
         val now = System.currentTimeMillis()
         val shown = AlertNotifier.show(context, uid, reminder.title, reminder.notes, id,
             occurrenceId, alertId, "local")
         if (!shown && !store.hasAlert(uid, alertId)) return
-        val nudge = reminder.repeatUntilDoneMinutes
-        val next = if (nudge != null) now + nudge * 60_000L
-            else Schedule.next(reminder.rule, maxOf(now, due))
+        val (next, pendingOccurrence) = Acknowledgment.next(reminder, scheduledAt, now)
         val advanced = reminder.copy(nextDueAt = next, lastScheduledAt = scheduledAt, lastSentAt = now,
-            currentScheduledAt = if (nudge != null) scheduledAt else null)
+            currentScheduledAt = pendingOccurrence)
         if (store.reminder(uid, id)?.nextDueAt == due) {
             store.saveReminder(uid, advanced)
+            ReminderWidgetProvider.update(context)
             context.sendBroadcast(Intent(RemindRepository.LOCAL_CHANGE_ACTION).setPackage(context.packageName))
             AlertScheduler(context).schedule(uid, advanced)
         }

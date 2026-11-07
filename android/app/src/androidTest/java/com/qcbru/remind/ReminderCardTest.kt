@@ -25,7 +25,7 @@ class ReminderCardTest {
         compose.onNodeWithText("Take vitamins").assertExists()
         compose.onNodeWithText("Done").performClick()
         assertEquals("done", lastAction)
-        compose.onNodeWithText("Snooze 10 min").performClick()
+        compose.onNodeWithText("Remind me later").performClick()
         assertEquals("snooze", lastAction)
         compose.onNodeWithContentDescription("More actions").performClick()
         compose.onNodeWithText("Conversations").performClick()

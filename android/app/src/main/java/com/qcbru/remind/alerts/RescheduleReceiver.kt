@@ -6,11 +6,13 @@ import android.content.Intent
 import com.qcbru.remind.data.ActionSync
 import com.qcbru.remind.data.RemindRepository
 import com.qcbru.remind.data.PushSync
+import com.qcbru.remind.widget.ReminderWidgetProvider
 
 class RescheduleReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val uid = RemindRepository(context).cachedUid() ?: return
         AlertScheduler(context).reschedule(uid)
+        ReminderWidgetProvider.update(context)
         ActionSync.enqueue(context)
         PushSync.enqueue(context)
     }

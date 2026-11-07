@@ -71,6 +71,18 @@ not contact Firebase. Replace it with the real config before installing on a pho
 
 ## Checks
 
+Android shows five upcoming regular times in reminder review and cards, separates
+30-minute follow-ups from regular times, and offers a home-screen widget with
+Done and later actions. Pull down in Upcoming or History to request fresh server
+data; cached reminders remain visible when offline. A one-time alert stays active
+until Done. On the first Android sign-in after this update, existing active reminders
+are brought under the same acknowledgment policy.
+
+On a device, inspect the adaptive launcher icon, notification microphone, widget
+empty and signed-in states, notification Done and later actions, and all three
+snooze choices. Also check that a new regular occurrence replaces an unanswered
+older one and that a notification swipe does not mark it Done.
+
 From the repository root run `pnpm test`, `pnpm run typecheck:web`,
 `pnpm run build:functions`, and `pnpm run build:web`. From `android/` run
 `./gradlew testDebugUnitTest assembleDebug assembleDebugAndroidTest` after adding

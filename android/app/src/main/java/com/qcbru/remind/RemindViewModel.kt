@@ -15,6 +15,7 @@ import com.qcbru.remind.data.PushSync
 import com.qcbru.remind.data.RemindRepository
 import com.qcbru.remind.data.Reminder
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -46,11 +47,14 @@ data class RemindUiState(
 )
 
 class RemindViewModel(application: Application) : AndroidViewModel(application) {
+    private data class SnoozeRequest(val uid: String, val reminderId: String, val occurrenceId: String)
     private val repo = RemindRepository(application)
     private val prefs = application.getSharedPreferences("remind", 0)
     private val store = (application as RemindApplication).store
     private val mutable = MutableStateFlow(RenindInitial())
     val state = mutable.asStateFlow()
+    val completionHaptics = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private var pendingSnooze: SnoozeRequest? = null
     private val authListener = FirebaseAuth.AuthStateListener { auth ->
         val user = auth.currentUser
         val verified = user?.isEmailVerified == true && user.providerData.any { it.providerId == "google.com" }
@@ -76,6 +80,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         prefs.edit().putString("conversation:$uid", fresh).apply()
         mutable.update { it.copy(uid = uid, email = email, conversationId = fresh, turns = emptyList(),
             proposal = null, reminders = store.reminders(uid), notice = prefs.getString("sync_notice", "") ?: "") }
+        resolvePendingSnooze()
         prefs.edit().remove("sync_notice").apply()
         repo.observe(uid, { reminders -> mutable.update { it.copy(reminders = reminders) } },
             { events -> mutable.update { it.copy(events = events) } }, { error -> notice(error) })
@@ -139,6 +144,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
                 val proposal = (result["proposal"] as? Map<*, *>)?.let { Proposal.fromMap(it) }
                 mutable.update { it.copy(turns = it.turns + (text.trim() to reply), proposal = proposal,
                     speak = if (spoken && it.spokenReplies) reply else null) }
+                if (reply.isNotBlank()) completionHaptics.tryEmit(Unit)
             } catch (error: Exception) { notice(error.message ?: "Request failed") }
             finally { mutable.update { it.copy(busy = false) } }
         }
@@ -165,6 +171,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
                 repo.confirm(proposal)
                 freshConversation()
                 notice(if (proposal.action == "delete") "Reminder deleted" else "Reminder saved")
+                completionHaptics.tryEmit(Unit)
             } catch (error: Exception) { notice(error.message ?: "Could not save") }
             finally { mutable.update { it.copy(busy = false) } }
         }
@@ -194,13 +201,31 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         repo.queueAction(uid, reminder.id, occurrence, action, local)
         mutable.update { it.copy(reminders = store.reminders(uid)) }
         notice(if (action == "done") "Marked done" else "Reminding you later")
+        if (action == "done") completionHaptics.tryEmit(Unit)
     }
 
-    fun openSnoozeChooser(reminderId: String, occurrenceId: String) {
+    fun requestSnoozeChooser(uid: String, reminderId: String, occurrenceId: String) {
+        pendingSnooze = SnoozeRequest(uid, reminderId, occurrenceId)
+        resolvePendingSnooze()
+    }
+
+    private fun resolvePendingSnooze() {
+        val request = pendingSnooze ?: return
         val uid = mutable.value.uid ?: return
-        val reminder = store.reminder(uid, reminderId) ?: return
-        if (!currentOccurrence(uid, reminder, occurrenceId)) return
+        pendingSnooze = null
+        if (uid != request.uid) {
+            notice("This reminder belongs to another account")
+        } else if (!openSnoozeChooser(request.reminderId, request.occurrenceId)) {
+            notice("That alert is no longer current")
+        }
+    }
+
+    fun openSnoozeChooser(reminderId: String, occurrenceId: String): Boolean {
+        val uid = mutable.value.uid ?: return false
+        val reminder = store.reminder(uid, reminderId) ?: return false
+        if (!currentOccurrence(uid, reminder, occurrenceId)) return false
         mutable.update { it.copy(snoozeReminderId = reminderId, snoozeOccurrenceId = occurrenceId) }
+        return true
     }
 
     private fun currentOccurrence(uid: String, reminder: Reminder, occurrenceId: String): Boolean {
@@ -228,6 +253,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         closeSnoozeChooser()
         refreshLocal()
         notice("Reminding you later")
+        completionHaptics.tryEmit(Unit)
     }
 
     fun eveningSnoozeAt(): Long {
@@ -240,7 +266,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     fun delete(reminder: Reminder) {
         mutable.update { it.copy(busy = true) }
         viewModelScope.launch {
-            try { repo.deleteReminder(reminder); notice("Reminder deleted") }
+            try { repo.deleteReminder(reminder); notice("Reminder deleted"); completionHaptics.tryEmit(Unit) }
             catch (error: Exception) { notice(error.message ?: "Could not delete") }
             finally { mutable.update { it.copy(busy = false) } }
         }

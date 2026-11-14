@@ -19,6 +19,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.view.HapticFeedbackConstantsCompat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,10 +28,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -87,6 +91,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.flow.collect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -96,6 +101,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -152,6 +158,11 @@ class MainActivity : ComponentActivity() {
                     state.speak?.let { if (ttsReady) tts?.speak(it, TextToSpeech.QUEUE_FLUSH, null, "remind-reply") }
                     model.clearSpeak()
                 }
+                LaunchedEffect(model) {
+                    model.completionHaptics.collect {
+                        window.decorView.performHapticFeedback(HapticFeedbackConstantsCompat.CONFIRM)
+                    }
+                }
                 RemindScreen(state, model, recording, onSignIn = ::signIn,
                     onMic = { if (recording) stopRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO) },
                     onConfirm = { val needsPush = state.proposal?.action != "delete"; model.confirm()
@@ -165,7 +176,7 @@ class MainActivity : ComponentActivity() {
                     onHaptic = { window.decorView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) })
             }
         }
-        handleReminderIntent(intent)
+        if (savedInstanceState == null) handleReminderIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -179,7 +190,9 @@ class MainActivity : ComponentActivity() {
         if (uid != null && uid != RemindRepository(this).cachedUid()) return
         val reminderId = intent.getStringExtra("reminderId") ?: return
         if (intent.data?.scheme == "remind" && intent.data?.host == "later") {
-            intent.getStringExtra("occurrenceId")?.let { model.openSnoozeChooser(reminderId, it) }
+            val occurrenceId = intent.getStringExtra("occurrenceId") ?: return
+            val ownerUid = uid ?: return
+            model.requestSnoozeChooser(ownerUid, reminderId, occurrenceId)
         } else model.setTab("Upcoming")
     }
 
@@ -230,6 +243,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
     onExactAlarms: () -> Unit, onHaptic: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val focusManager = LocalFocusManager.current
     var draft by rememberSaveable { mutableStateOf("") }
     val sendDraft = {
@@ -252,7 +266,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
         ) },
         snackbarHost = { SnackbarHost(snackbar) },
-        bottomBar = { if (state.uid != null) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+        bottomBar = { if (state.uid != null && !imeVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
             listOf("Ask", "Upcoming", "History", "Settings").forEach { tab ->
                 NavigationBarItem(selected = state.tab == tab, onClick = { model.setTab(tab) },
                     icon = { Icon(when (tab) {
@@ -266,7 +280,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
         } } ) { padding ->
         if (state.uid == null) WelcomeScreen(Modifier.fillMaxSize().padding(padding), onSignIn)
         else when (state.tab) {
-            "Ask" -> Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
+            "Ask" -> Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(
                     start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)) {

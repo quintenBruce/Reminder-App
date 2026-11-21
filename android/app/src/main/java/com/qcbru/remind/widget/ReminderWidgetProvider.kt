@@ -13,8 +13,7 @@ import com.qcbru.remind.MainActivity
 import com.qcbru.remind.R
 import com.qcbru.remind.RemindApplication
 import com.qcbru.remind.alerts.ActionReceiver
-import java.text.DateFormat
-import java.util.Date
+import com.qcbru.remind.data.dateLabel
 
 class ReminderWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
@@ -50,7 +49,7 @@ class ReminderWidgetProvider : AppWidgetProvider() {
                     if (reminder == null || uid == null) return@forEachIndexed
                     views.setTextViewText(titles[index], reminder.title)
                     val due = reminder.nextDueAt
-                    val whenText = due?.let { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it)) }
+                    val whenText = due?.let { dateLabel(it) }
                         ?: "Awaiting Done"
                     views.setTextViewText(details[index], if (reminder.currentAlert) "Needs attention · $whenText" else whenText)
                     views.setOnClickPendingIntent(titles[index], activity(context, "open", uid, reminder.id, null))

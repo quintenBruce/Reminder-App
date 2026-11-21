@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -96,6 +97,8 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.flow.collect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -124,13 +127,13 @@ import com.qcbru.remind.data.Reminder
 import com.qcbru.remind.data.Schedule
 import com.qcbru.remind.data.PushSync
 import com.qcbru.remind.data.RemindRepository
+import com.qcbru.remind.data.clockLabel
+import com.qcbru.remind.data.dateLabel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
-import java.text.DateFormat
-import java.util.Date
-import java.util.Locale
+import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
     private val model: RemindViewModel by viewModels()
@@ -339,6 +342,8 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val focusManager = LocalFocusManager.current
     var draft by rememberSaveable { mutableStateOf("") }
+    val conversationList = rememberLazyListState()
+    var lastScrolledResponse by rememberSaveable { mutableStateOf("") }
     var draftFocused by remember { mutableStateOf(false) }
     var keyboardWasVisible by remember { mutableStateOf(false) }
     LaunchedEffect(imeVisible) {
@@ -386,6 +391,20 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
         else if (!state.profileReady) ProfileScreen(state, model, Modifier.fillMaxSize().padding(padding))
         else when (state.tab) {
             "Ask" -> Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
+                LaunchedEffect(state.conversationId, state.turns.size) {
+                    val response = "${state.conversationId}:${state.turns.size}"
+                    if (state.turns.isNotEmpty() && response != lastScrolledResponse) {
+                        // Anchor after the entire review, even when the card is taller than the viewport.
+                        val endIndex = 1 + state.turns.size +
+                            (if (state.conversationOpener.isNotBlank()) 1 else 0) +
+                            (if (state.recipientChoices.isNotEmpty()) 1 else 0) +
+                            (if (state.proposal != null) 1 else 0)
+                        withFrameNanos { }
+                        snapshotFlow { conversationList.layoutInfo.totalItemsCount }.first { it == endIndex + 1 }
+                        conversationList.animateScrollToItem(endIndex)
+                        lastScrolledResponse = response
+                    }
+                }
                 PullToRefreshBox(
                     isRefreshing = false,
                     onRefresh = {
@@ -397,7 +416,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
                     },
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                 ) {
-                    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
+                    LazyColumn(Modifier.fillMaxSize(), state = conversationList, contentPadding = PaddingValues(
                         start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         item {
@@ -423,11 +442,28 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
                                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                     Text(if (proposal.action == "delete") "Review deletion" else "Review reminder",
                                         style = MaterialTheme.typography.titleMedium)
-                                    Text(proposal.readback, style = MaterialTheme.typography.bodyLarge)
+                                    val review = proposal.review
+                                    if (review == null) {
+                                        // Older Functions deployments only return an unstructured summary.
+                                        Text(proposal.readback.replace(
+                                            Regex("; follow up every \\d+ minutes until Done\\. Confirm\\?", RegexOption.IGNORE_CASE), ""),
+                                            style = MaterialTheme.typography.bodyLarge)
+                                    } else {
+                                        review.title?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
+                                        review.notes?.takeIf { it.isNotBlank() }?.let { Text("Notes · $it") }
+                                        review.actionDetail?.let { Text(it) }
+                                        review.recurrence?.takeUnless { it == "Once" }?.let { Text("Repeats · $it") }
+                                        review.endsAt?.let { Text("Ends · ${dateLabel(it)}") }
+                                        if (review.recipients.isNotEmpty()) Text("Shared with · ${review.recipients.joinToString()}")
+                                    }
                                     if (proposal.action == "create" || proposal.action == "edit") {
-                                        Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
-                                        proposal.preview.take(3).forEach { Text(dateLabel(it),
-                                            style = MaterialTheme.typography.bodyMedium) }
+                                        if (proposal.preview.isNotEmpty()) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
+                                                proposal.preview.take(3).forEach { Text("•  ${dateLabel(it)}",
+                                                    style = MaterialTheme.typography.bodyMedium) }
+                                            }
+                                        }
                                         if (proposal.priority) {
                                             Text("Fullscreen alarm when permitted. Shared with everyone; each person can override it.", style = MaterialTheme.typography.bodySmall)
                                             PriorityAccessButton()
@@ -452,6 +488,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
                                 Text(progress.label, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         } }
+                        item(key = "conversation-end") { Spacer(Modifier.height(1.dp)) }
                     }
                 }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
@@ -551,10 +588,11 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
         onDismissRequest = model::closeSnoozeChooser,
         title = { Text("Remind me later") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val evening = remember { model.eveningSnoozeAt() }
             listOf("In 10 minutes" to 10, "In 1 hour" to 60,
-                "This evening (6:00 PM)" to 0).forEach { (label, minutes) ->
+                "Evening (${clockLabel(evening)})" to 0).forEach { (label, minutes) ->
                 OutlinedButton(onClick = {
-                    if (minutes == 0) model.snooze(10, model.eveningSnoozeAt())
+                    if (minutes == 0) model.snooze(10, evening)
                     else model.snooze(minutes)
                 }, modifier = Modifier.fillMaxWidth()) {
                     Text(label)
@@ -697,9 +735,6 @@ internal fun ReminderCard(reminder: Reminder, onEdit: () -> Unit, onHistory: () 
                     }
                 }
                 if (scheduleExpanded) {
-                    Text("Follows up every ${reminder.repeatUntilDoneMinutes ?: 30} min until Done",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                     val regular = if (reminder.currentScheduledAt != null)
                         Schedule.preview(reminder.rule, reminder.currentScheduledAt, 3)
                     else Schedule.preview(reminder.rule, due, 2)
@@ -868,7 +903,3 @@ private fun EmptyState(title: String, subtitle: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
-
-private fun dateLabel(value: Long?): String = value?.let {
-    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT, Locale.getDefault()).format(Date(it))
-} ?: "—"

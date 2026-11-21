@@ -338,7 +338,8 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
                 val choices = (result["recipientChoices"] as? List<*>)?.mapNotNull { item ->
                     (item as? Map<*, *>)?.let { (it["displayName"] as? String ?: "") to (it["username"] as? String ?: "") }
                 } ?: emptyList()
-                mutable.update { it.copy(turns = it.turns + (text.trim() to reply), proposal = proposal,
+                mutable.update { it.copy(turns = it.turns + (text.trim() to if (proposal == null) reply else ""), proposal = proposal,
+                    composerProgress = null,
                     recipientChoices = choices, matchName = result["matchName"] as? String ?: "", originalText = result["originalText"] as? String ?: "",
                     speak = if (spoken && it.spokenReplies) reply else null) }
                 if (reply.isNotBlank()) completionHaptics.tryEmit(Unit)

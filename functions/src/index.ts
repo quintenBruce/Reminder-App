@@ -1,3 +1,4 @@
+import { buildProposalReview } from './proposalReview';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { authorize, consume, limits } from './limits';
@@ -131,21 +132,6 @@ function checkedRule(d: ModelDecision, current?: ReminderRecord, pending?: Propo
   return rule;
 }
 
-function summarize(rule: ScheduleRule, dates: number[], deviceZone: string): string {
-  const first = dates[0] ? new Date(dates[0]).toLocaleString('en-US', { timeZone: 'timeZone' in rule ? rule.timeZone : deviceZone, dateStyle: 'medium', timeStyle: 'short' }) : 'no future date';
-  if (rule.kind === 'once') return `once, ${first}`;
-  const ending = rule.endAt ? `, ending ${new Date(rule.endAt).toLocaleString('en-US', { timeZone: 'timeZone' in rule ? rule.timeZone : deviceZone, dateStyle: 'medium', timeStyle: 'short' })}` : '';
-  if (rule.kind === 'interval') return `every ${rule.everyMinutes} minutes, starting ${first}${ending}`;
-  const localTime = `${String(rule.hour).padStart(2, '0')}:${String(rule.minute).padStart(2, '0')}`;
-  const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const frequency = rule.kind === 'weekly' ? `weekly on ${rule.daysOfWeek!.map(day => weekdays[day - 1]).join(', ')}`
-    : rule.kind === 'monthly' ? `monthly on day ${rule.dayOfMonth} (or the last day of shorter months)`
-      : rule.kind === 'monthly_weekday' ? `monthly on the ${rule.weekOfMonth === -1 ? 'last' : `${rule.weekOfMonth}${['st', 'nd', 'rd'][rule.weekOfMonth! - 1] ?? 'th'}`} ${weekdays[rule.daysOfWeek![0] - 1]}`
-        : rule.kind === 'monthly_weekly' ? `every ${rule.daysOfWeek!.map(day => weekdays[day - 1]).join(', ')} on or after day ${rule.startDayOfMonth} of each month`
-      : rule.kind === 'yearly' ? `yearly on month ${rule.month}, day ${rule.dayOfMonth} (or the last day of shorter months)` : 'daily';
-  return `${frequency} at ${localTime} in ${rule.timeZone}, starting ${first}${ending}`;
-}
-
 function openai() { return new OpenAI({ apiKey: openAiKey.value() }); }
 
 export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstances: 2, memory: '512MiB' }, request => observe('transcribeAudio', request.auth?.uid, async trace => {
@@ -258,11 +244,11 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   }
   const title = d.action === 'create' ? textValue(d.title || pending?.title, 200) : (d.title ? textValue(d.title, 200) : candidate?.title || null);
   const notes = d.notes === null ? candidate?.notes ?? pending?.notes ?? '' : stringValue(d.notes, 1000);
-  let readback = d.action === 'create' || d.action === 'edit'
-    ? `${d.action === 'create' ? 'Create' : 'Change'} “${title}”${notes ? ` (${notes})` : ''}: ${summarize(rule!, preview, zone)}; follow up every ${nudgeMinutes ?? 30} minutes until Done. Confirm?`
-    : d.action === 'delete' ? `Permanently delete “${candidate!.title}” and its reminder records? This cannot be undone. Confirm?`
-      : `${d.action === 'snooze' ? `Snooze “${candidate!.title}” for ${d.snoozeMinutes} minutes` : `${d.action[0].toUpperCase()}${d.action.slice(1)} “${candidate!.title}”`}. Confirm?`;
-  if (participantIds.length) readback += ` Shared with ${friends.filter(f => participantIds.includes(f.uid)).map(f => `${f.displayName} (@${f.username})`).join(', ')}. Everyone can edit; Done and snooze are personal.`;
+  const recipients = candidate?.sharedId ? candidate.participantNames ?? []
+    : friends.filter(f => participantIds.includes(f.uid)).map(f => `${f.displayName} (@${f.username})`);
+  const { review, readback } = buildProposalReview({
+    action: d.action, title, notes, rule, recipients, preview, snoozeMinutes: d.snoozeMinutes,
+  });
   const proposal: Proposal = {
     participantIds, ...(candidate?.sharedId ? { sharedId: candidate.sharedId, sharedVersion: candidate.sharedVersion } : {}),
     priority: candidate?.sharedPriority ?? candidate?.priority ?? false,
@@ -277,7 +263,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     turns.add({ user: utterance, assistant: readback, proposalId: proposal.id, createdAt: now }),
   ]);
   trace.stage('proposal.saved', { conversationId, proposalId: proposal.id, action: d.action, reminderId: candidate?.id ?? null });
-  return { conversationId, reply: readback, proposal };
+  return { conversationId, reply: readback, proposal: { ...proposal, review } };
 }));
 
 async function applyAction(uid: string, reminderId: string, action: 'done' | 'dismiss' | 'snooze', snoozeMinutes: number | null, requestId: string, expectedVersion?: number | null, occurrenceId?: string, conversationId?: string, localDelivery = false, snoozeAt?: number) {

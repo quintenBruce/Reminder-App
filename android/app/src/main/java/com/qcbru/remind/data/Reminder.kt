@@ -73,6 +73,26 @@ data class PendingAction(
     val localDelivery: Boolean,
 )
 
+data class ProposalReview(
+    val title: String?,
+    val notes: String?,
+    val recurrence: String?,
+    val endsAt: Long?,
+    val recipients: List<String>,
+    val actionDetail: String?,
+) {
+    companion object {
+        internal fun fromMap(map: Map<*, *>) = ProposalReview(
+            title = map["title"] as? String,
+            notes = map["notes"] as? String,
+            recurrence = map["recurrence"] as? String,
+            endsAt = (map["endsAt"] as? Number)?.toLong(),
+            recipients = (map["recipients"] as? List<*>)?.filterIsInstance<String>().orEmpty(),
+            actionDetail = map["actionDetail"] as? String,
+        )
+    }
+}
+
 data class Proposal(
     val id: String,
     val action: String,
@@ -81,9 +101,12 @@ data class Proposal(
     val targetId: String?,
     val baseVersion: Long?,
     val priority: Boolean = false,
+    val review: ProposalReview? = null,
 ) {
     companion object {
         fun fromMap(map: Map<*, *>): Proposal = Proposal(
+            review = (map["review"] as? Map<*, *>)?.let { ProposalReview.fromMap(it) }
+                ?: legacyScheduleReview(map),
             priority = map["priority"] as? Boolean ?: false,
             id = map["id"] as String,
             action = map["action"] as String,
@@ -92,5 +115,25 @@ data class Proposal(
             targetId = map["targetId"] as? String,
             baseVersion = (map["baseVersion"] as? Number)?.toLong(),
         )
+
+        private fun legacyScheduleReview(map: Map<*, *>): ProposalReview? {
+            if (map["action"] !in listOf("create", "edit")) return null
+            val title = map["title"] as? String ?: return null
+            val rule = map["rule"] as? Map<*, *>
+            val recurrence = when (rule?.get("kind")) {
+                "interval" -> (rule["everyMinutes"] as? Number)?.let { "Every ${it.toInt()} minutes" }
+                "daily" -> "Daily"
+                "weekly" -> "Weekly"
+                "monthly", "monthly_weekday", "monthly_weekly" -> "Monthly"
+                "yearly" -> "Yearly"
+                else -> null
+            }
+            val endAt = (rule?.get("endAt") as? String)?.let {
+                runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
+            }
+            val recipients = (map["readback"] as? String)?.substringAfter(". Confirm? Shared with ", "")
+                ?.substringBefore(". Everyone can edit;")?.takeIf { it.isNotBlank() }
+            return ProposalReview(title, map["notes"] as? String, recurrence, endAt, listOfNotNull(recipients), null)
+        }
     }
 }

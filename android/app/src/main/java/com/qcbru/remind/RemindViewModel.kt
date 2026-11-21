@@ -55,6 +55,7 @@ data class RemindUiState(
     val turns: List<Pair<String, String>> = emptyList(),
     val proposal: Proposal? = null,
     val conversationId: String = "",
+    val conversationOpener: String = "",
     val busy: Boolean = false,
     val composerProgress: ComposerProgress? = null,
     val notice: String = "",
@@ -74,6 +75,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     private data class SnoozeRequest(val uid: String, val reminderId: String, val occurrenceId: String)
     private val repo = RemindRepository(application)
     private val prefs = application.getSharedPreferences("remind", 0)
+    private val openers = ConversationOpeners(application.getSharedPreferences("conversation_openers", 0))
     private val store = (application as RemindApplication).store
     private val mutable = MutableStateFlow(RenindInitial())
     val state = mutable.asStateFlow()
@@ -107,7 +109,8 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         val previous = prefs.getString("conversation:$uid", null)
         val fresh = repo.newConversationId()
         prefs.edit().putString("conversation:$uid", fresh).apply()
-        mutable.update { it.copy(uid = uid, email = email, conversationId = fresh, turns = emptyList(),
+        val opener = openers.next()
+        mutable.update { it.copy(uid = uid, email = email, conversationId = fresh, conversationOpener = opener, turns = emptyList(),
             profileReady = prefs.contains("profile_username:$uid"), profileLoaded = prefs.contains("profile_username:$uid"),
             displayName = prefs.getString("profile_name:$uid", "") ?: "", username = prefs.getString("profile_username:$uid", "") ?: "",
             proposal = null, reminders = store.reminders(uid), notice = prefs.getString("sync_notice", "") ?: "") }
@@ -371,7 +374,8 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         val uid = mutable.value.uid ?: return
         val fresh = repo.newConversationId()
         prefs.edit().putString("conversation:$uid", fresh).apply()
-        mutable.update { it.copy(conversationId = fresh, turns = emptyList(), proposal = null, speak = null,
+        val opener = openers.next()
+        mutable.update { it.copy(conversationId = fresh, conversationOpener = opener, turns = emptyList(), proposal = null, speak = null,
             recipientChoices = emptyList(), matchName = "", originalText = "", notice = "") }
     }
 

@@ -400,6 +400,9 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
                         item {
                             ScreenHeading("New reminder", "Type or speak your reminder.")
                         }
+                        if (state.conversationOpener.isNotBlank()) item {
+                            AssistantMessage(state.conversationOpener)
+                        }
                         items(state.turns) { (user, assistant) ->
                             ConversationTurn(user, assistant)
                         }
@@ -798,14 +801,17 @@ private fun ConversationTurn(user: String, assistant: String) {
                     style = MaterialTheme.typography.bodyLarge)
             }
         }
-        if (assistant.isNotBlank()) {
-            Surface(shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-                Text(assistant, Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    style = MaterialTheme.typography.bodyMedium)
-            }
-        }
+        if (assistant.isNotBlank()) AssistantMessage(assistant)
+    }
+}
+
+@Composable
+private fun AssistantMessage(text: String) {
+    Surface(shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        Text(text, Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            style = MaterialTheme.typography.bodyMedium)
     }
 }
 

@@ -28,7 +28,5 @@ steps:
       - --config=firebase.json
       - --only=hosting,firestore,functions
       - --non-interactive
-      # Acknowledge the failure retry policy on syncReminderDevices in CI.
-      - --force
 options:
   logging: CLOUD_LOGGING_ONLY

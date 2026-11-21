@@ -4,7 +4,7 @@ import { getMessaging } from 'firebase-admin/messaging';
 
 // Synchronize created/edited/deleted reminders even when clients have no active listener.
 export const syncReminderDevices = onDocumentWritten({ document: 'users/{uid}/reminders/{reminderId}',
-  region: process.env.FUNCTIONS_REGION || 'us-south1', maxInstances: 2, retry: true }, async event => {
+  region: process.env.FUNCTIONS_REGION || 'us-south1', maxInstances: 2, retry: false }, async event => {
   const before = event.data?.before.data(), after = event.data?.after.data();
   // Scheduler bookkeeping does not change user-visible content or require another push.
   const fields = ['version', 'sharedVersion', 'priority', 'priorityOverride'];

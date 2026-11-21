@@ -26,6 +26,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -40,6 +41,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -794,24 +796,31 @@ private fun ScreenHeading(title: String, subtitle: String) {
 @Composable
 private fun ConversationTurn(user: String, assistant: String) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Surface(shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.primaryContainer) {
-                Text(user, Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    style = MaterialTheme.typography.bodyLarge)
-            }
-        }
+        ConversationMessage(user, fromUser = true)
         if (assistant.isNotBlank()) AssistantMessage(assistant)
     }
 }
 
 @Composable
 private fun AssistantMessage(text: String) {
-    Surface(shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-        Text(text, Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            style = MaterialTheme.typography.bodyMedium)
+    ConversationMessage(text, fromUser = false)
+}
+
+@Composable
+private fun ConversationMessage(text: String, fromUser: Boolean) {
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = if (fromUser) Alignment.TopEnd else Alignment.TopStart,
+    ) {
+        Surface(
+            modifier = Modifier.widthIn(max = maxWidth * 0.8f),
+            shape = MaterialTheme.shapes.large,
+            color = if (fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+            border = if (fromUser) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Text(text, Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                style = if (fromUser) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium)
+        }
     }
 }
 

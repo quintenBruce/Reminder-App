@@ -7,6 +7,8 @@
 
 Try: **“Remind me and @username to call tomorrow at 6 PM.”** Check the names and time, then tap **Create**.
 
+Tap **Speak reminder** to open the recording drawer. Tap the mic to send your recording for transcription, or **Cancel** to discard it. If a name is unclear, choose the friend from the suggestions before creating the reminder.
+
 Everyone can edit a shared reminder. **Done and snooze affect only you.** Leave stops your alerts; Delete for everyone removes the reminder for all participants.
 
 **Priority alarm** requests fullscreen alerts when Android allows them. Enable fullscreen access if prompted. You can override priority for yourself from the reminder menu; it does not automatically bypass Do Not Disturb.

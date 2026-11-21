@@ -19,11 +19,18 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import com.google.firebase.functions.FirebaseFunctionsException
 import java.util.TimeZone
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 
 data class RemindUiState(
+    val profileStatus: String = "Checking your account…",
+    val profileChecking: Boolean = true,
+    val friendsRefreshing: Boolean = false,
     val profileLoaded: Boolean = false,
     val profileReady: Boolean = false,
     val displayName: String = "",
@@ -64,14 +71,19 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     private val mutable = MutableStateFlow(RenindInitial())
     val state = mutable.asStateFlow()
     val completionHaptics = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val reminderCreated = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private var profileJob: Job? = null
+    private var profileWaiting = false
+    private var foreground = false
     private var pendingSnooze: SnoozeRequest? = null
     private val authListener = FirebaseAuth.AuthStateListener { auth ->
         val user = auth.currentUser
         val verified = user?.isEmailVerified == true && user.providerData.any { it.providerId == "google.com" }
         if (verified) openAccount(user.uid, user.email ?: "")
         else {
+            profileJob?.cancel()
             repo.stopObserving()
-            mutable.update { it.copy(uid = null, email = "", reminders = emptyList(), proposal = null, profileLoaded = false, profileReady = false, friends = emptyList(), inviteUrl = "", inviter = null) }
+            mutable.update { it.copy(uid = null, email = "", reminders = emptyList(), proposal = null, profileLoaded = false, profileReady = false, friendsRefreshing = false, friends = emptyList(), inviteUrl = "", inviter = null) }
         }
     }
 
@@ -117,27 +129,66 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
             finally { mutable.update { it.copy(busy = false) } }
         }
     }
-    fun loadProfile() {
+    private fun loadProfile() {
         val uid = mutable.value.uid ?: return
-        viewModelScope.launch {
-            runCatching { repo.call("accountProfile")["profile"] as? Map<*, *> }.onSuccess { profile ->
-                if (mutable.value.uid == uid) {
+        profileJob?.cancel()
+        profileWaiting = false
+        mutable.update { it.copy(profileChecking = true, profileStatus = "Checking your account…") }
+        profileJob = viewModelScope.launch {
+            var backoff = 1000L
+            while (true) {
+                try {
+                    val profile = repo.call("accountProfile")["profile"] as? Map<*, *>
+                    if (mutable.value.uid != uid) return@launch
                     if (profile != null) prefs.edit().putString("profile_name:$uid", profile["displayName"] as? String)
                         .putString("profile_username:$uid", profile["username"] as? String).apply()
-                    mutable.update { it.copy(profileLoaded = true, profileReady = profile != null,
+                    mutable.update { it.copy(profileChecking = false, profileLoaded = true, profileReady = profile != null,
                         displayName = profile?.get("displayName") as? String ?: "", username = profile?.get("username") as? String ?: "") }
                     if (profile != null) previewInvite()
+                    return@launch
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    val code = (error as? FirebaseFunctionsException)?.code
+                    val retryable = code in setOf(FirebaseFunctionsException.Code.UNAVAILABLE,
+                        FirebaseFunctionsException.Code.DEADLINE_EXCEEDED, FirebaseFunctionsException.Code.INTERNAL,
+                        FirebaseFunctionsException.Code.UNKNOWN, FirebaseFunctionsException.Code.RESOURCE_EXHAUSTED)
+                    if (!retryable || !foreground) {
+                        mutable.update { it.copy(profileChecking = false,
+                            profileStatus = "Remind couldn’t verify your account.") }
+                        return@launch
+                    }
+                    mutable.update { it.copy(profileStatus = "Connecting to your account…") }
+                    profileWaiting = true
+                    delay(backoff)
+                    profileWaiting = false
+                    backoff = (backoff * 2).coerceAtMost(30_000L)
                 }
-            }.onFailure { notice(it.message ?: "Could not check account. Tap Retry.") }
+            }
         }
     }
     fun saveProfile(name: String, username: String) = accountTask {
         repo.call("saveProfile", mapOf("displayName" to name, "username" to username)); loadProfile()
     }
-    fun loadFriends() = accountTask {
-        val result = repo.call("listFriends")["friends"] as? List<*> ?: emptyList<Any>()
-        val friends = result.mapNotNull { item -> (item as? Map<*, *>)?.entries?.associate { it.key.toString() to it.value.toString() } }
-        mutable.update { it.copy(friends = friends) }
+    fun loadFriends() {
+        val uid = mutable.value.uid ?: return
+        if (mutable.value.friendsRefreshing) return
+        mutable.update { it.copy(friendsRefreshing = true) }
+        viewModelScope.launch {
+            try {
+                val result = repo.call("listFriends")["friends"] as? List<*> ?: emptyList<Any>()
+                val friends = result.mapNotNull { item ->
+                    (item as? Map<*, *>)?.entries?.associate { it.key.toString() to it.value.toString() }
+                }
+                if (mutable.value.uid == uid) mutable.update { it.copy(friends = friends) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (mutable.value.uid == uid) notice(error.message ?: "Could not refresh friends.")
+            } finally {
+                if (mutable.value.uid == uid) mutable.update { it.copy(friendsRefreshing = false) }
+            }
+        }
     }
     fun createInvite() = accountTask {
         val url = repo.call("createFriendInvite")["url"] as? String ?: ""
@@ -181,7 +232,22 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         getApplication(), Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
     fun refreshLocal() { mutable.value.uid?.let { uid -> mutable.update { it.copy(reminders = store.reminders(uid)) } } }
-    fun onResume() { refreshLocal(); if (mutable.value.uid != null && notificationsAllowed()) PushSync.enqueue(getApplication()) }
+    fun onResume() {
+        foreground = true
+        if (!mutable.value.profileLoaded && profileJob?.isActive != true) loadProfile()
+        refreshLocal()
+        if (mutable.value.uid != null && notificationsAllowed()) PushSync.enqueue(getApplication())
+    }
+
+    fun onBackground() {
+        foreground = false
+        profileJob?.cancel()
+        profileWaiting = false
+    }
+
+    fun onNetworkAvailable() {
+        if (foreground && profileWaiting) loadProfile()
+    }
 
     fun refresh() {
         val uid = mutable.value.uid ?: return
@@ -252,7 +318,10 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     fun chooseRecipient(username: String) {
         val current = mutable.value
         if (current.matchName.isBlank() || current.recipientChoices.none { it.second == username }) return
-        send(current.originalText.replace(current.matchName, "@$username", ignoreCase = true))
+        val name = Regex.escape(current.matchName.removePrefix("@"))
+        val mention = Regex("(?<![\\p{L}\\p{N}_@])@?$name(?![\\p{L}\\p{N}_])", RegexOption.IGNORE_CASE)
+        val corrected = mention.replaceFirst(current.originalText, "@$username")
+        send(if (corrected == current.originalText) "${current.originalText}. I meant @$username." else corrected)
     }
 
     fun confirm() {
@@ -261,6 +330,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 repo.confirm(proposal)
+                if (proposal.action == "create") reminderCreated.tryEmit(Unit)
                 freshConversation()
                 notice(if (proposal.action == "delete") "Reminder deleted" else "Reminder saved")
                 completionHaptics.tryEmit(Unit)

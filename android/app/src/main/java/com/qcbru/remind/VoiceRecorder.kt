@@ -11,7 +11,7 @@ class VoiceRecorder(private val context: Context) {
     private var file: File? = null
     private var startedAt = 0L
 
-    fun start() {
+    fun start(onError: () -> Unit) {
         check(recorder == null)
         val output = File.createTempFile("remind-voice-", ".m4a", context.cacheDir)
         val recording = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else @Suppress("DEPRECATION") MediaRecorder()
@@ -22,7 +22,9 @@ class VoiceRecorder(private val context: Context) {
             recording.setAudioEncodingBitRate(64_000)
             recording.setAudioSamplingRate(16_000)
             recording.setOutputFile(output.absolutePath)
-            recording.setMaxDuration(60_000)
+            recording.setOnErrorListener { source, _, _ ->
+                if (recorder === source) onError()
+            }
             recording.prepare()
             recording.start()
             recorder = recording
@@ -33,12 +35,20 @@ class VoiceRecorder(private val context: Context) {
         }
     }
 
-    fun stop(): String {
-        val recording = recorder ?: error("No recording")
+    fun amplitude(): Int = runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
+
+    fun finish() {
+        val recording = recorder ?: return
         val output = file ?: error("No recording file")
-        recorder = null; file = null
-        try { recording.stop() } catch (error: Exception) { output.delete(); throw error }
+        recorder = null
+        try { recording.stop() } catch (error: Exception) { file = null; output.delete(); throw error }
         finally { recording.release() }
+    }
+
+    fun stop(): String {
+        finish()
+        val output = file ?: error("No recording file")
+        file = null
         try {
             require(System.currentTimeMillis() - startedAt >= 250) { "Recording was too short" }
             require(output.length() in 1..5_000_000) { "Recording must be under 5 MB" }

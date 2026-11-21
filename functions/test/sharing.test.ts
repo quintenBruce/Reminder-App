@@ -28,7 +28,7 @@ vi.mock('firebase-admin/firestore', () => ({ getFirestore: () => fake.db }));
 import { commitShared, removeShared } from '../src/sharing';
 import { authorize, consume, profileInput, quotaWindows } from '../src/limits';
 import { saveProfile, friendInvite } from '../src/social';
-import { matchFriend } from '../src/friendMatching';
+import { resolveFriend } from '../src/friendMatching';
 import { applyReminderAction } from '../../shared/src/reminderState';
 import type { Proposal } from '../src/index';
 
@@ -140,8 +140,19 @@ describe('backend limits and identity', () => {
   });
   it('returns ambiguous matches rather than silently choosing a friend', () => {
     const friends = [{ uid: 'a', displayName: 'Alex Green', username: 'alexg' }, { uid: 'b', displayName: 'Alex Blue', username: 'alexb' }];
-    expect(matchFriend('Alex', friends)).toHaveLength(2);
-    expect(matchFriend('@alexg', friends).map(f => f.uid)).toEqual(['a']);
-    expect(matchFriend('Alxe', friends)).toHaveLength(0);
+    expect(resolveFriend('Alex', friends).matches).toHaveLength(2);
+    expect(resolveFriend('@alexg', friends).selected?.uid).toBe('a');
+    expect(resolveFriend('Alxe', friends).matches).toHaveLength(2);
+    expect(resolveFriend('Alxe', friends).selected).toBeUndefined();
+  });
+  it('handles name parts and reordered names, and confirms uncertain matches', () => {
+    const friends = [{ uid: 'a', displayName: 'Sofía Patel', username: 'sofiap' }];
+    expect(resolveFriend('  PATÉL, Sofia ', friends).selected?.uid).toBe('a');
+    expect(resolveFriend('Patel', friends).selected?.uid).toBe('a');
+    expect(resolveFriend('SofiaPatel', friends).selected?.uid).toBe('a');
+    for (const name of ['Soifa', 'Sofea', 'Sophia']) {
+      expect(resolveFriend(name, friends).matches.map(f => f.uid)).toEqual(['a']);
+      expect(resolveFriend(name, friends).selected).toBeUndefined();
+    }
   });
 });

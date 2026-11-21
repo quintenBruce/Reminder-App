@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { authorize, consume, limits } from './limits';
-import { matchFriend, type Friend } from './friendMatching';
+import { resolveFriend, type Friend } from './friendMatching';
 import { commitShared, removeShared } from './sharing';
 export { accountProfile, saveProfile, listFriends, createFriendInvite, friendInvite, removeFriend, revokeFriendInvite } from './social';
 export { leaveSharedReminder, setPriorityOverride } from './sharing';
@@ -202,7 +202,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     model, store: false, reasoning: { effort: 'low' },
     max_output_tokens: 2000,
     text: { format: { type: 'json_schema', name: 'reminder_decision', strict: true, schema: decisionSchema } },
-    instructions: `You interpret reminder requests. Extract friend names into recipientNames when the user asks to share a NEW reminder. For existing reminders preserve membership and return an empty recipientNames array. Never invent recipients. Friends: ${JSON.stringify(friends)}. Current instant: ${new Date().toISOString()}. Device IANA zone: ${zone}. Resolve references only to candidate IDs. If ambiguous or a time is missing, clarify. For create/edit return a complete schedule using an ISO offset instant in at/startAt. For a wall-clock recurrence choose an IANA timeZone and local hour/minute. Weekdays use 1=Monday through 7=Sunday. "Every 3rd Sunday of the month" uses kind=monthly_weekday, daysOfWeek=[7], weekOfMonth=3. For the last weekday of a month use weekOfMonth=-1; a fifth weekday occurs only in months that have one. "Starting the 10th of every month, every Friday" uses kind=monthly_weekly, daysOfWeek=[5], startDayOfMonth=10; the cutoff resets each month. Use startAt for the earliest allowed occurrence, not for that repeating monthly cutoff. A request like "every 5 minutes until done" is a one-time occurrence with repeatUntilDoneMinutes=5, not a perpetual interval rule. For an edit, provide the entire replacement schedule when changing timing; otherwise kind=null preserves it. Use clearRepeatUntilDone=true only if the user removes those nudges. If the user revises a pending creation, return action=create with full revised fields. Use delete for delete/remove/erase requests: it permanently erases the reminder and its related records after confirmation. Cancel only stops scheduling and retains history. Never offer dismiss. Keep responses short. Never invent a target ID.`,
+    instructions: `You interpret reminder requests. Extract friend names into recipientNames when the user asks to share a NEW reminder. Copy names and @usernames verbatim from the request, even if misspelled, so the app can match them safely. For existing reminders preserve membership and return an empty recipientNames array. Never invent recipients. Friends: ${JSON.stringify(friends)}. Current instant: ${new Date().toISOString()}. Device IANA zone: ${zone}. Resolve references only to candidate IDs. If ambiguous or a time is missing, clarify. For create/edit return a complete schedule using an ISO offset instant in at/startAt. For a wall-clock recurrence choose an IANA timeZone and local hour/minute. Weekdays use 1=Monday through 7=Sunday. "Every 3rd Sunday of the month" uses kind=monthly_weekday, daysOfWeek=[7], weekOfMonth=3. For the last weekday of a month use weekOfMonth=-1; a fifth weekday occurs only in months that have one. "Starting the 10th of every month, every Friday" uses kind=monthly_weekly, daysOfWeek=[5], startDayOfMonth=10; the cutoff resets each month. Use startAt for the earliest allowed occurrence, not for that repeating monthly cutoff. A request like "every 5 minutes until done" is a one-time occurrence with repeatUntilDoneMinutes=5, not a perpetual interval rule. For an edit, provide the entire replacement schedule when changing timing; otherwise kind=null preserves it. Use clearRepeatUntilDone=true only if the user removes those nudges. If the user revises a pending creation, return action=create with full revised fields. Use delete for delete/remove/erase requests: it permanently erases the reminder and its related records after confirmation. Cancel only stops scheduling and retains history. Never offer dismiss. Keep responses short. Never invent a target ID.`,
     input: JSON.stringify({ utterance, history, pendingProposal: pending ? { action: pending.action, targetId: pending.targetId, title: pending.title, notes: pending.notes, rule: pending.rule, repeatUntilDoneMinutes: pending.repeatUntilDoneMinutes, snoozeMinutes: pending.snoozeMinutes } : null,
       candidates: candidates.map(r => ({ id: r.id, title: r.title, status: r.status, rule: r.rule, repeatUntilDoneMinutes: r.repeatUntilDoneMinutes, nextDueAt: r.nextDueAt })) }),
   });
@@ -234,13 +234,13 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   if (d.action === 'create' && d.recipientNames?.length) {
     participantIds.length = 0;
     for (const name of d.recipientNames) {
-      const matches = matchFriend(name, friends);
-      if (matches.length !== 1) return { conversationId, proposal: null,
+      const { matches, selected } = resolveFriend(name, friends);
+      if (!selected) return { conversationId, proposal: null,
         recipientChoices: matches.map(f => ({ displayName: f.displayName, username: f.username })), matchName: name, originalText: utterance,
         reply: matches.length
-        ? `Which ${name}? Please repeat the request using a username: ${matches.map(f => '@' + f.username).join(', ')}`
+        ? `Choose the friend you meant by “${name}”.`
         : `No friend matches “${name}”. Add them in Friends first, or repeat using their exact username.` };
-      participantIds.push(matches[0].uid);
+      participantIds.push(selected.uid);
     }
   }
   let rule: ScheduleRule | null = null;
@@ -249,7 +249,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   if (d.action === 'create' || d.action === 'edit') {
     rule = checkedRule(d, candidate, pending);
     validateNudge(nudgeMinutes);
-    preview = previewOccurrences(rule, now);
+    preview = previewOccurrences(rule, now, 3);
     if (!preview.length && !(candidate?.sharedId && d.action === 'edit' && isDeepStrictEqual(rule, candidate.rule)))
       throw new HttpsError('invalid-argument', 'This schedule has no future occurrence.');
   }

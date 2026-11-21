@@ -7,6 +7,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.Bundle
 import android.os.Vibrator
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -119,6 +122,8 @@ import com.qcbru.remind.data.Schedule
 import com.qcbru.remind.data.PushSync
 import com.qcbru.remind.data.RemindRepository
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
 import java.text.DateFormat
 import java.util.Date
@@ -128,6 +133,17 @@ class MainActivity : ComponentActivity() {
     private val model: RemindViewModel by viewModels()
     private lateinit var voice: VoiceRecorder
     private var recording by mutableStateOf(false)
+    private var recordingReady by mutableStateOf(false)
+    private var recordingLimit: Job? = null
+    private var exactAlarmGuide by mutableStateOf(false)
+    private var guideAfterNotification = false
+    private var testAfterNotification = false
+    private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            lifecycleScope.launch { model.onNetworkAvailable() }
+        }
+    }
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private val localChange = object : BroadcastReceiver() {
@@ -137,8 +153,14 @@ class MainActivity : ComponentActivity() {
         if (granted) startRecording() else model.notice("Microphone permission is needed for voice requests")
     }
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) { model.testPush(); model.onResume() }
+        if (granted) {
+            if (testAfterNotification) model.testPush()
+            PushSync.enqueue(this)
+        }
         else model.notice("Enable notifications in Android settings to receive alerts")
+        testAfterNotification = false
+        if (guideAfterNotification) showExactAlarmGuide()
+        guideAfterNotification = false
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -163,17 +185,31 @@ class MainActivity : ComponentActivity() {
                         window.decorView.performHapticFeedback(HapticFeedbackConstantsCompat.CONFIRM)
                     }
                 }
-                RemindScreen(state, model, recording, onSignIn = ::signIn,
-                    onMic = { if (recording) stopRecording() else micPermission.launch(Manifest.permission.RECORD_AUDIO) },
-                    onConfirm = { val needsPush = state.proposal?.action != "delete"; model.confirm()
-                        if (needsPush) {
-                            if (!model.notificationsAllowed()) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            else PushSync.enqueue(this@MainActivity)
-                        } },
-                    onNotifications = { if (Build.VERSION.SDK_INT >= 33 && !model.notificationsAllowed())
-                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) else model.testPush() },
+                LaunchedEffect(model) { model.reminderCreated.collect { guideReminderPermissions() } }
+                RemindScreen(state, model, onSignIn = ::signIn,
+                    onMic = {
+                        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+                            android.content.pm.PackageManager.PERMISSION_GRANTED) startRecording()
+                        else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                    onConfirm = model::confirm,
+                    onNotifications = {
+                        if (Build.VERSION.SDK_INT >= 33 && !model.notificationsAllowed()) {
+                            testAfterNotification = true
+                            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else model.testPush()
+                    },
                     onExactAlarms = ::requestExactAlarms,
                     onHaptic = { window.decorView.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) })
+                if (recording || recordingReady) VoiceSheet(recordingReady, voice::amplitude,
+                    onSend = ::stopRecording, onCancel = ::cancelRecording)
+                if (exactAlarmGuide) AlertDialog(
+                    onDismissRequest = { exactAlarmGuide = false },
+                    title = { Text("Allow exact alarms?") },
+                    text = { Text("This helps reminders ring on time, including when you’re offline. Without it, local alerts may be delayed.") },
+                    confirmButton = { TextButton(onClick = { exactAlarmGuide = false; requestExactAlarms() }) { Text("Open settings") } },
+                    dismissButton = { TextButton(onClick = { exactAlarmGuide = false }) { Text("Not now") } },
+                )
             }
         }
         if (savedInstanceState == null) handleReminderIntent(intent)
@@ -217,14 +253,56 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startRecording() {
-        runCatching { voice.start(); recording = true }
+        if (recording || recordingReady || model.state.value.busy) return
+        runCatching {
+            voice.start {
+                cancelRecording()
+                model.notice("Could not record audio. Try speaking again.")
+            }
+            recording = true
+            recordingLimit = lifecycleScope.launch {
+                delay(60_000)
+                if (recording) {
+                    recording = false
+                    runCatching { voice.finish() }.onSuccess { recordingReady = true }
+                        .onFailure { model.notice(it.message ?: "Recording failed") }
+                }
+            }
+        }
             .onFailure { model.notice(it.message ?: "Could not start microphone") }
     }
     private fun stopRecording() {
+        if (!recording && !recordingReady) return
+        recordingLimit?.cancel()
         recording = false
+        recordingReady = false
         runCatching { voice.stop() }.onSuccess(model::transcribe)
             .onFailure { model.notice(it.message ?: "Recording failed") }
     }
+    private fun cancelRecording() {
+        recordingLimit?.cancel()
+        recording = false
+        recordingReady = false
+        voice.cancel()
+    }
+
+    private fun guideReminderPermissions() {
+        val prefs = getSharedPreferences("remind_permission_guidance", MODE_PRIVATE)
+        if (Build.VERSION.SDK_INT >= 33 && !model.notificationsAllowed() && !prefs.getBoolean("notifications", false)) {
+            prefs.edit().putBoolean("notifications", true).apply()
+            guideAfterNotification = true
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else showExactAlarmGuide()
+    }
+
+    private fun showExactAlarmGuide() {
+        if (Build.VERSION.SDK_INT < 31 || getSystemService(AlarmManager::class.java).canScheduleExactAlarms()) return
+        val prefs = getSharedPreferences("remind_permission_guidance", MODE_PRIVATE)
+        if (prefs.getBoolean("exact_alarm", false)) return
+        prefs.edit().putBoolean("exact_alarm", true).apply()
+        exactAlarmGuide = true
+    }
+
     private fun requestExactAlarms() {
         if (Build.VERSION.SDK_INT >= 31 && !getSystemService(AlarmManager::class.java).canScheduleExactAlarms())
             startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
@@ -233,17 +311,24 @@ class MainActivity : ComponentActivity() {
     }
     override fun onStart() {
         super.onStart()
+        connectivity.registerDefaultNetworkCallback(networkCallback)
         ContextCompat.registerReceiver(this, localChange, IntentFilter(RemindRepository.LOCAL_CHANGE_ACTION),
             ContextCompat.RECEIVER_NOT_EXPORTED)
     }
-    override fun onStop() { unregisterReceiver(localChange); super.onStop() }
+    override fun onStop() {
+        cancelRecording()
+        model.onBackground()
+        connectivity.unregisterNetworkCallback(networkCallback)
+        unregisterReceiver(localChange)
+        super.onStop()
+    }
     override fun onResume() { super.onResume(); model.onResume() }
     override fun onDestroy() { voice.cancel(); tts?.shutdown(); super.onDestroy() }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording: Boolean,
+private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
     onSignIn: () -> Unit, onMic: () -> Unit, onConfirm: () -> Unit, onNotifications: () -> Unit,
     onExactAlarms: () -> Unit, onHaptic: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
@@ -281,6 +366,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                         "Ask" -> Icons.Default.Mic
                         "Upcoming" -> Icons.Default.Notifications
                         "History" -> Icons.Default.History
+                        "Friends" -> Icons.Default.Group
                         else -> Icons.Default.Settings
                     }, contentDescription = if (tab == "Ask") "Create" else tab) },
                     label = { Text(if (tab == "Ask") "Create" else tab) })
@@ -303,9 +389,6 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                                 Icon(Icons.Default.NotificationsActive, contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary)
                                 Text("What do you need to remember?", style = MaterialTheme.typography.titleLarge)
-                                Text("Review the times before saving.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                         }
                     }
@@ -328,17 +411,17 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                                     style = MaterialTheme.typography.titleMedium)
                                 Text(proposal.readback, style = MaterialTheme.typography.bodyLarge)
                                 if (proposal.action == "create" || proposal.action == "edit") {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        androidx.compose.material3.Checkbox(checked = proposal.priority, onCheckedChange = { model.setProposalPriority(it) })
-                                        Text("Priority alarm")
-                                    }
+                                    Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
+                                    proposal.preview.take(3).forEach { Text(dateLabel(it),
+                                        style = MaterialTheme.typography.bodyMedium) }
                                     if (proposal.priority) {
                                         Text("Fullscreen alarm when permitted. Shared with everyone; each person can override it.", style = MaterialTheme.typography.bodySmall)
                                         PriorityAccessButton()
                                     }
-                                    Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
-                                    proposal.preview.take(5).forEach { Text(dateLabel(it),
-                                        style = MaterialTheme.typography.bodyMedium) }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        androidx.compose.material3.Checkbox(checked = proposal.priority, onCheckedChange = { model.setProposalPriority(it) })
+                                        Text("Priority alarm")
+                                    }
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(enabled = !state.busy,
@@ -369,15 +452,12 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                         }
                     }
-                    FilledTonalButton(enabled = !state.busy, onClick = { onHaptic(); onMic() },
+                    FilledTonalButton(enabled = !state.busy, onClick = { keyboard?.hide(); focusManager.clearFocus(); onHaptic(); onMic() },
                         modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.Mic, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text(if (recording) "Stop recording" else "Speak reminder")
+                        Text("Speak reminder")
                     }
-                    Text("Review and confirm before saving.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             "Upcoming" -> PullToRefreshBox(isRefreshing = state.refreshing,
@@ -580,8 +660,8 @@ internal fun ReminderCard(reminder: Reminder, onEdit: () -> Unit, onHistory: () 
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     val regular = if (reminder.currentScheduledAt != null)
-                        Schedule.preview(reminder.rule, reminder.currentScheduledAt, 5)
-                    else Schedule.preview(reminder.rule, due, 4)
+                        Schedule.preview(reminder.rule, reminder.currentScheduledAt, 3)
+                    else Schedule.preview(reminder.rule, due, 2)
                     if (regular.isNotEmpty()) Text("${if (reminder.currentScheduledAt != null) "SCHEDULED" else "LATER"} TIMES",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -652,6 +732,7 @@ private fun SettingsScreen(state: RemindUiState, modifier: Modifier, onTheme: (S
                         Spacer(Modifier.width(8.dp))
                         Text("Alarms & reminders access")
                     }
+                    PriorityAccessButton()
                 }
             }
         }
@@ -678,7 +759,7 @@ private fun WelcomeScreen(modifier: Modifier, onSignIn: () -> Unit) {
                     tint = MaterialTheme.colorScheme.primary)
             }
             Text("Make room for what matters.", style = MaterialTheme.typography.headlineMedium)
-            Text("Create reminders by typing or speaking. Review the schedule before saving.",
+            Text("Create reminders by typing or speaking.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth()) {

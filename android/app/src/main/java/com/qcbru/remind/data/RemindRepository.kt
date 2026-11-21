@@ -29,7 +29,11 @@ class RemindRepository(private val context: Context) {
     private var eventListener: ListenerRegistration? = null
 
     suspend fun call(name: String, data: Map<String, Any?> = emptyMap()): Map<*, *> {
-        val timeoutSeconds = if (name in setOf("confirmProposal", "deleteReminder", "initializeConversations")) 540L else 120L
+        val timeoutSeconds = when (name) {
+            "confirmProposal", "deleteReminder", "initializeConversations" -> 540L
+            "accountProfile" -> 10L
+            else -> 120L
+        }
         val result = functions.getHttpsCallable(name).withTimeout(timeoutSeconds, TimeUnit.SECONDS).call(data).await().data
         return result as? Map<*, *> ?: emptyMap<String, Any>()
     }

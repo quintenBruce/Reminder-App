@@ -42,15 +42,15 @@ fun FriendsScreen(state: RemindUiState, model: RemindViewModel, modifier: Modifi
             Text("Friends", style = MaterialTheme.typography.headlineMedium)
             Text("${state.displayName} · @${state.username}")
             Text("Friends can share reminders with you. Everyone can edit; Done and snooze stay personal.")
-            Button(onClick = model::createInvite, enabled = !state.busy) { Text("Create invitation link") }
-            if (state.inviteUrl.isNotBlank()) {
-                Text("Expires in 7 days. One friend can accept. A new link replaces this one.")
-                OutlinedButton(onClick = {
+            Button(onClick = {
+                model.shareFriendLink { url ->
                     context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "Add me on Remind: ${state.inviteUrl}")
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, "Add me on Remind: $url")
                     }, "Share invitation"))
-                }) { Text("Share link") }
-                TextButton(onClick = model::revokeInvite) { Text("Revoke link") }
+                }
+            }, enabled = !state.busy) {
+                Text(if (state.preparingFriendLink) "Getting link…" else "Share friend link")
             }
             if (state.friends.isEmpty()) Text("No friends yet. Send an invitation to get started.")
             state.friends.forEach { friend ->

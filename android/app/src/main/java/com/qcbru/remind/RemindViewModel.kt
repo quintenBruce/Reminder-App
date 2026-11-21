@@ -42,7 +42,7 @@ data class RemindUiState(
     val displayName: String = "",
     val username: String = "",
     val friends: List<Map<String, String>> = emptyList(),
-    val inviteUrl: String = "",
+    val preparingFriendLink: Boolean = false,
     val inviter: String? = null,
     val recipientChoices: List<Pair<String, String>> = emptyList(),
     val matchName: String = "",
@@ -90,7 +90,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         else {
             profileJob?.cancel()
             repo.stopObserving()
-            mutable.update { it.copy(uid = null, email = "", reminders = emptyList(), proposal = null, profileLoaded = false, profileReady = false, friendsRefreshing = false, friends = emptyList(), inviteUrl = "", inviter = null) }
+            mutable.update { it.copy(uid = null, email = "", reminders = emptyList(), proposal = null, profileLoaded = false, profileReady = false, friendsRefreshing = false, friends = emptyList(), preparingFriendLink = false, inviter = null) }
         }
     }
 
@@ -197,11 +197,17 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
     }
-    fun createInvite() = accountTask {
-        val url = repo.call("createFriendInvite")["url"] as? String ?: ""
-        mutable.update { it.copy(inviteUrl = url) }
+    fun shareFriendLink(onReady: (String) -> Unit) = accountTask {
+        val uid = mutable.value.uid ?: return@accountTask
+        mutable.update { it.copy(preparingFriendLink = true) }
+        try {
+            val url = (repo.call("createFriendInvite")["url"] as? String)?.takeIf { it.isNotBlank() }
+                ?: error("Could not get a friend link.")
+            if (mutable.value.uid == uid && foreground && mutable.value.tab == "Friends") onReady(url)
+        } finally {
+            mutable.update { it.copy(preparingFriendLink = false) }
+        }
     }
-    fun revokeInvite() = accountTask { repo.call("revokeFriendInvite"); mutable.update { it.copy(inviteUrl = "") } }
     fun removeFriend(uid: String) = accountTask {
         repo.call("removeFriend", mapOf("uid" to uid)); mutable.update { it.copy(friends = it.friends.filter { f -> f["uid"] != uid }) }
     }

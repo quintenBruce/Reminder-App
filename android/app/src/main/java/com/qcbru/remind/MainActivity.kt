@@ -383,68 +383,70 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
         else if (!state.profileReady) ProfileScreen(state, model, Modifier.fillMaxSize().padding(padding))
         else when (state.tab) {
             "Ask" -> Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
-                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(
-                    start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    item {
-                        ScreenHeading("New reminder", "Type or speak your reminder.")
-                    }
-                    if (state.turns.isEmpty()) item {
-                        Surface(shape = MaterialTheme.shapes.large,
-                            color = MaterialTheme.colorScheme.primaryContainer) {
-                            Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Icon(Icons.Default.NotificationsActive, contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary)
-                                Text("What do you need to remember?", style = MaterialTheme.typography.titleLarge)
-                            }
+                PullToRefreshBox(
+                    isRefreshing = false,
+                    onRefresh = {
+                        if (model.startFreshConversation()) {
+                            draft = ""
+                            keyboard?.hide()
+                            focusManager.clearFocus()
                         }
-                    }
-                    items(state.turns) { (user, assistant) ->
-                        ConversationTurn(user, assistant)
-                    }
-                    if (state.recipientChoices.isNotEmpty()) item {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Choose a friend", style = MaterialTheme.typography.titleMedium)
-                            state.recipientChoices.forEach { (name, username) ->
-                                OutlinedButton(enabled = !state.busy, onClick = { model.chooseRecipient(username) }) { Text("$name (@$username)") }
-                            }
+                    },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                ) {
+                    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(
+                        start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        item {
+                            ScreenHeading("New reminder", "Type or speak your reminder.")
                         }
-                    }
-                    state.proposal?.let { proposal -> item {
-                        Card(colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
-                            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Text(if (proposal.action == "delete") "Review deletion" else "Review reminder",
-                                    style = MaterialTheme.typography.titleMedium)
-                                Text(proposal.readback, style = MaterialTheme.typography.bodyLarge)
-                                if (proposal.action == "create" || proposal.action == "edit") {
-                                    Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
-                                    proposal.preview.take(3).forEach { Text(dateLabel(it),
-                                        style = MaterialTheme.typography.bodyMedium) }
-                                    if (proposal.priority) {
-                                        Text("Fullscreen alarm when permitted. Shared with everyone; each person can override it.", style = MaterialTheme.typography.bodySmall)
-                                        PriorityAccessButton()
-                                    }
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        androidx.compose.material3.Checkbox(checked = proposal.priority, onCheckedChange = { model.setProposalPriority(it) })
-                                        Text("Priority alarm")
-                                    }
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(enabled = !state.busy,
-                                        onClick = { onHaptic(); onConfirm() }) { Text(if (proposal.action == "create") "Create" else "Confirm") }
-                                    TextButton(onClick = model::cancelProposal) { Text("Cancel") }
+                        items(state.turns) { (user, assistant) ->
+                            ConversationTurn(user, assistant)
+                        }
+                        if (state.recipientChoices.isNotEmpty()) item {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Choose a friend", style = MaterialTheme.typography.titleMedium)
+                                state.recipientChoices.forEach { (name, username) ->
+                                    OutlinedButton(enabled = !state.busy, onClick = { model.chooseRecipient(username) }) { Text("$name (@$username)") }
                                 }
                             }
                         }
-                    } }
-                    state.composerProgress?.let { progress -> item {
-                        Row(verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text(progress.label, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    } }
+                        state.proposal?.let { proposal -> item {
+                            Card(colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+                                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text(if (proposal.action == "delete") "Review deletion" else "Review reminder",
+                                        style = MaterialTheme.typography.titleMedium)
+                                    Text(proposal.readback, style = MaterialTheme.typography.bodyLarge)
+                                    if (proposal.action == "create" || proposal.action == "edit") {
+                                        Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
+                                        proposal.preview.take(3).forEach { Text(dateLabel(it),
+                                            style = MaterialTheme.typography.bodyMedium) }
+                                        if (proposal.priority) {
+                                            Text("Fullscreen alarm when permitted. Shared with everyone; each person can override it.", style = MaterialTheme.typography.bodySmall)
+                                            PriorityAccessButton()
+                                        }
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            androidx.compose.material3.Checkbox(checked = proposal.priority, onCheckedChange = { model.setProposalPriority(it) })
+                                            Text("Priority alarm")
+                                        }
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(enabled = !state.busy,
+                                            onClick = { onHaptic(); onConfirm() }) { Text(if (proposal.action == "create") "Create" else "Confirm") }
+                                        TextButton(onClick = model::cancelProposal) { Text("Cancel") }
+                                    }
+                                }
+                            }
+                        } }
+                        state.composerProgress?.let { progress -> item {
+                            Row(verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Text(progress.label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        } }
+                    }
                 }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)) {

@@ -355,16 +355,24 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun cancelProposal() {
+        startFreshConversation()
+    }
+
+    fun startFreshConversation(): Boolean {
+        if (mutable.value.uid == null || mutable.value.busy) return false
         val old = mutable.value.conversationId
+        val hadConversation = mutable.value.turns.isNotEmpty() || mutable.value.proposal != null
         freshConversation()
-        viewModelScope.launch { runCatching { repo.discardDraft(old) } }
+        if (hadConversation) viewModelScope.launch { runCatching { repo.discardDraft(old) } }
+        return true
     }
 
     private fun freshConversation() {
         val uid = mutable.value.uid ?: return
         val fresh = repo.newConversationId()
         prefs.edit().putString("conversation:$uid", fresh).apply()
-        mutable.update { it.copy(conversationId = fresh, turns = emptyList(), proposal = null, speak = null) }
+        mutable.update { it.copy(conversationId = fresh, turns = emptyList(), proposal = null, speak = null,
+            recipientChoices = emptyList(), matchName = "", originalText = "", notice = "") }
     }
 
     fun act(reminder: Reminder, action: String) {

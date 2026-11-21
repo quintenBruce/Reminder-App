@@ -1,48 +1,25 @@
 # Remind
 
-The native Android client is in [android/](android/README.md). It uses the same
-Firebase accounts and reminder records as the PWA. Android sign-in and phone
-notifications require Android app registration and the real `google-services.json`;
-see its setup guide. The PWA remains available during the transition, and its
-Settings can disable web notifications on a phone using native alerts.
+Android reminders with Google sign-in, voice/text creation, shared reminders, and optional fullscreen priority alarms. Firebase stores account data and runs the reminder/AI backend. The web/PWA app has been retired; Hosting serves invitation and installation pages only.
 
-Firefox-first reminder PWA. The code follows [PLAN.md](PLAN.md) and [TECHNICAL_IMPLEMENTATION_PLAN.md](TECHNICAL_IMPLEMENTATION_PLAN.md). For Firebase, Google Cloud, and GitHub setup, use [the deployment guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md).
+- [Release setup checklist](docs/FRIENDS_RELEASE_SETUP.md): Firebase, signing, invitation links, deployment, limits, and acceptance checks.
+- [Instructions to send friends](docs/FRIEND_INSTALL.md).
+- [Android development](android/README.md).
 
-## Implemented source
+## Build and test
 
-- Material 3 inspired React/TypeScript PWA with system light/dark mode, a sticky header, a prominent push-to-talk control, spoken readbacks for voice requests, text input, confirmation cards, upcoming reminders, history, and settings.
-- Firebase Google sign-in for any verified Google account; each account has private Firestore data and server-only writes.
-- Callable functions for recorded-audio transcription, structured conversational proposals, explicit confirmation, Done/Snooze, permanent reminder deletion, device registration and removal, and conversation deletion. Legacy Dismiss calls remain supported for older clients. AI usage has per-account and app-wide daily limits.
-- Shared recurrence rules for one-time, elapsed intervals, and daily/weekly/monthly/yearly wall-clock schedules, including numbered or last weekdays of a month and weekly days after a monthly cutoff, DST resolution, and next-five previews.
-- One scheduled dispatcher per minute and a data-only FCM push worker with Done and Snooze notification actions where Firefox supports them. Duplicate reminder descriptions are omitted from push notifications.
-- Voice capture requests the microphone with `getUserMedia`, records PCM through an AudioWorklet, and sends a mono 16 kHz WAV to the transcription function. The worklet selects the active input channel; the UI shows input level and rejects very short or silent WAVs locally. If Web Audio cannot start, capture falls back to the browser's `MediaRecorder` format.
+Use Node 22 and the pinned pnpm version. Run `pnpm install --frozen-lockfile`, `pnpm test`, and `pnpm run build:functions`. From `android`, run `./gradlew testDebugUnitTest assembleDebug assembleDebugAndroidTest` with JDK 21 and Android SDK 37 installed.
 
-For example, “remind me every 3rd Sunday of the month at noon” fires on the third Sunday in each month. “Starting the 10th of every month, remind me every Friday at noon to do QuickBooks” fires on Fridays dated the 10th or later, resetting that cutoff each month. The app asks for a time when one is missing and reads the interpreted schedule back for confirmation.
+`cloudbuild.yaml` builds/tests the backend and deploys Functions, Firestore configuration, and static Hosting through the existing trigger. Release APKs require a private signing key; see the release checklist. No App Check debug tokens are required.
 
-## Verification and deployment
+## Sharing
 
-The user authorized a build for this project. The committed pnpm lockfile supports `pnpm install --frozen-lockfile`; `functions/package-lock.json` pins the dependencies installed by the Cloud Functions buildpack. Run `pnpm test`, `pnpm run typecheck:web`, `pnpm run build:functions`, and `pnpm run build:web` to verify it. On 2026-10-12, 52 tests, both typechecks, and the production web build passed. The web build has a bundle-size warning, but completes successfully.
+One canonical shared reminder controls content, schedule, membership, and default priority. Server-maintained account views hold individual delivery/completion/snooze state. Edits are transactional and version checked. Friends can create reminders together; Done and snooze are personal. Everyone can leave or explicitly delete for everyone. Removing a friend preserves existing shared reminders.
 
-[`cloudbuild.yaml`](cloudbuild.yaml) runs those checks and deploys on a GitHub push after the Cloud Build trigger is configured. The supplied public Firebase Web config is recorded there. [`scripts/prepare-deploy.mjs`](scripts/prepare-deploy.mjs) validates settings and writes the ignored Functions environment file. See [the setup guide](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md) for configuration. Verify each deployment and device behavior separately.
+## Limits and delivery
 
-## Device acceptance
+The combined app-wide transcription/interpretation quota is 100 operations per UTC day. Other backend limits are centralized in `functions/src/limits.ts`. Google authentication and server-side authorization remain mandatory; Firestore clients cannot write data directly.
 
-Use the actual Samsung phone with current Firefox for Android. Record the exact model and version numbers during testing. Install the PWA from Firefox and grant microphone access. Notification access is requested when confirming the first reminder; **Enable & test** in Settings sends a real push for manual diagnosis. With permission granted, the app refreshes registration when opened, when brought back into view, after network recovery, and when its server device record disappears. Failed refreshes retry with backoff. Then check a five-minute reminder with Firefox foregrounded, backgrounded, closed, and after a phone restart. Check Done, Snooze, grouped previews, permanent Delete, recurrence, timezone travel, and offline recovery. If background delivery remains unreliable on that device, a native Android notification component is the next stronger option.
+FCM acceptance is not proof that a phone displayed an alert. Synced reminders have local alarm fallback; offline devices cannot learn about remote changes until they reconnect. Fullscreen alarms depend on Android permissions and device settings. Validate both accounts and phones before distributing a release.
 
-## Delivery diagnostics
-
-Each send attempt is recorded in Firestore at `users/{uid}/occurrences/{reminderId}_{scheduledAt}`. The `status` is `sent`, `retry`, or `missed`; `reason` distinguishes `accepted`, `no_devices`, `all_rejected`, and `send_error`. The record also includes device, accepted, and rejected counts plus Firebase error codes. `sent` means FCM accepted the push, not that the phone displayed it. Older occurrence records lack these diagnostic fields until retried.
-
-Backend Cloud Logs use structured `operation.started`, `operation.stage`, `operation.succeeded`, and `operation.failed` entries for callable functions. Each has an `operationId`, `operation`, `uid`, and elapsed time; stages identify validation, quota, AI, persistence, and device registration progress. `dispatchDue` logs a claim and delivery result per occurrence, then a run summary when it found due reminders. Empty minute scans produce no app log. Logs omit reminder text, transcripts, audio, push tokens, API keys, exception messages, and stacks. See [the log queries](docs/FIREBASE_GOOGLE_CLOUD_SETUP.md#6-view-backend-logs).
-
-Delivery is best effort. Chrome is not required. A notification action opens the authenticated app and applies the requested action; the service worker does not hold credentials. Each page load and successful change starts an empty Ask conversation. Confirmed sessions are saved under their reminder and can be deleted individually there. Unconfirmed drafts are discarded on the next load or by daily cleanup after 24 hours. Raw audio is sent for transcription and is not stored in Firestore.
-
-The first upgraded load for each account permanently removes the previous long dashboard conversation. Existing reminder records remain.
-
-Every delivered occurrence needs **Done** to acknowledge it. Unacknowledged alerts follow up every 30 minutes by default; an explicit repeat-until-Done interval overrides that default. The next regular occurrence replaces an older unanswered one. Android offers 10 minutes, 1 hour, and 6:00 p.m. local time as snooze choices. Swiping a phone notification away does not acknowledge it.
-
-Upcoming retains a one-time or final scheduled occurrence until it is acknowledged. Android shows the next five regular scheduled times separately from follow-ups and has a home-screen widget for upcoming and unanswered reminders.
-
-Delete is permanent and requires confirmation. It stops scheduling first, then removes the reminder and its occurrence, action, event, proposal, and linked conversation records in retryable pages. Cloud Logs remain. An already displayed or in-flight phone notification may remain.
-
-The microphone and reminder action buttons request short haptic feedback when the browser permits it. No sound is played by this feature. Firefox for Android currently has an [open `navigator.vibrate()` issue](https://bugzilla.mozilla.org/show_bug.cgi?id=1653318), so button haptics may be unavailable on that browser.
+The older PLAN.md and TECHNICAL_IMPLEMENTATION_PLAN.md describe the original PWA architecture and are historical.

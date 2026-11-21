@@ -11,8 +11,8 @@ android {
         applicationId = "com.qcbru.remind"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }
@@ -22,8 +22,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
+    signingConfigs {
+        create("distribution") {
+            val keyPath = System.getenv("REMIND_KEYSTORE")
+            if (!keyPath.isNullOrBlank()) {
+                storeFile = file(keyPath)
+                storePassword = System.getenv("REMIND_STORE_PASSWORD")
+                keyAlias = System.getenv("REMIND_KEY_ALIAS")
+                keyPassword = System.getenv("REMIND_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
-        release { isMinifyEnabled = false }
+        release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("distribution") }
     }
 }
 
@@ -48,8 +59,6 @@ dependencies {
     implementation("com.google.firebase:firebase-firestore")
     implementation("com.google.firebase:firebase-functions")
     implementation("com.google.firebase:firebase-messaging")
-    implementation("com.google.firebase:firebase-appcheck-debug")
-    implementation("com.google.firebase:firebase-appcheck-playintegrity")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")

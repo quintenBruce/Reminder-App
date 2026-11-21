@@ -20,7 +20,7 @@ class AlertScheduler(private val context: Context) {
         val due = reminder.nextDueAt ?: return
         if (!reminder.active) return
         val intent = alarm(uid, reminder.id, due)
-        val fireAt = maxOf(System.currentTimeMillis() + 1_000L, due + 90_000L)
+        val fireAt = maxOf(System.currentTimeMillis() + 1_000L, due + if (reminder.priority) 0L else 90_000L)
         if (Build.VERSION.SDK_INT >= 31 && !alarms.canScheduleExactAlarms())
             alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, fireAt, intent)
         else alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, fireAt, intent)

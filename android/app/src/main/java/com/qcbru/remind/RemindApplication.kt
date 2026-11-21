@@ -5,9 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
 import com.google.firebase.FirebaseApp
-import com.google.firebase.appcheck.FirebaseAppCheck
-import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
-import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import com.qcbru.remind.data.LocalStore
 import com.qcbru.remind.alerts.AlertNotifier
 
@@ -18,14 +15,11 @@ class RemindApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         FirebaseApp.initializeApp(this)
-        FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-            if (BuildConfig.DEBUG) DebugAppCheckProviderFactory.getInstance()
-            else PlayIntegrityAppCheckProviderFactory.getInstance()
-        )
         store = LocalStore(this)
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel("reminders", "Reminders", NotificationManager.IMPORTANCE_HIGH)
         )
+        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("priority_alarms", "Priority alarms", NotificationManager.IMPORTANCE_HIGH))
         AlertNotifier.migrate(this)
     }
 }

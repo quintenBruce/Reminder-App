@@ -24,6 +24,16 @@ import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 
 data class RemindUiState(
+    val profileLoaded: Boolean = false,
+    val profileReady: Boolean = false,
+    val displayName: String = "",
+    val username: String = "",
+    val friends: List<Map<String, String>> = emptyList(),
+    val inviteUrl: String = "",
+    val inviter: String? = null,
+    val recipientChoices: List<Pair<String, String>> = emptyList(),
+    val matchName: String = "",
+    val originalText: String = "",
     val uid: String? = null,
     val email: String = "",
     val tab: String = "Ask",
@@ -61,7 +71,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         if (verified) openAccount(user.uid, user.email ?: "")
         else {
             repo.stopObserving()
-            mutable.update { it.copy(uid = null, email = "", reminders = emptyList(), proposal = null) }
+            mutable.update { it.copy(uid = null, email = "", reminders = emptyList(), proposal = null, profileLoaded = false, profileReady = false, friends = emptyList(), inviteUrl = "", inviter = null) }
         }
     }
 
@@ -79,7 +89,10 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         val fresh = repo.newConversationId()
         prefs.edit().putString("conversation:$uid", fresh).apply()
         mutable.update { it.copy(uid = uid, email = email, conversationId = fresh, turns = emptyList(),
+            profileReady = prefs.contains("profile_username:$uid"), profileLoaded = prefs.contains("profile_username:$uid"),
+            displayName = prefs.getString("profile_name:$uid", "") ?: "", username = prefs.getString("profile_username:$uid", "") ?: "",
             proposal = null, reminders = store.reminders(uid), notice = prefs.getString("sync_notice", "") ?: "") }
+        loadProfile()
         resolvePendingSnooze()
         prefs.edit().remove("sync_notice").apply()
         repo.observe(uid, { reminders -> mutable.update { it.copy(reminders = reminders) } },
@@ -93,6 +106,75 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
             ActionSync.enqueue(getApplication())
             AlertScheduler(getApplication()).reschedule(uid)
         }
+    }
+
+    private var inviteToken: String? = null
+    private fun accountTask(block: suspend () -> Unit) {
+        if (mutable.value.busy) return
+        mutable.update { it.copy(busy = true) }
+        viewModelScope.launch {
+            try { block() } catch (error: Exception) { notice(error.message ?: "Request failed") }
+            finally { mutable.update { it.copy(busy = false) } }
+        }
+    }
+    fun loadProfile() {
+        val uid = mutable.value.uid ?: return
+        viewModelScope.launch {
+            runCatching { repo.call("accountProfile")["profile"] as? Map<*, *> }.onSuccess { profile ->
+                if (mutable.value.uid == uid) {
+                    if (profile != null) prefs.edit().putString("profile_name:$uid", profile["displayName"] as? String)
+                        .putString("profile_username:$uid", profile["username"] as? String).apply()
+                    mutable.update { it.copy(profileLoaded = true, profileReady = profile != null,
+                        displayName = profile?.get("displayName") as? String ?: "", username = profile?.get("username") as? String ?: "") }
+                    if (profile != null) previewInvite()
+                }
+            }.onFailure { notice(it.message ?: "Could not check account. Tap Retry.") }
+        }
+    }
+    fun saveProfile(name: String, username: String) = accountTask {
+        repo.call("saveProfile", mapOf("displayName" to name, "username" to username)); loadProfile()
+    }
+    fun loadFriends() = accountTask {
+        val result = repo.call("listFriends")["friends"] as? List<*> ?: emptyList<Any>()
+        val friends = result.mapNotNull { item -> (item as? Map<*, *>)?.entries?.associate { it.key.toString() to it.value.toString() } }
+        mutable.update { it.copy(friends = friends) }
+    }
+    fun createInvite() = accountTask {
+        val url = repo.call("createFriendInvite")["url"] as? String ?: ""
+        mutable.update { it.copy(inviteUrl = url) }
+    }
+    fun revokeInvite() = accountTask { repo.call("revokeFriendInvite"); mutable.update { it.copy(inviteUrl = "") } }
+    fun removeFriend(uid: String) = accountTask {
+        repo.call("removeFriend", mapOf("uid" to uid)); mutable.update { it.copy(friends = it.friends.filter { f -> f["uid"] != uid }) }
+    }
+    fun receiveInvite(token: String) {
+        if (!token.matches(Regex("[A-Za-z0-9_-]{1,128}"))) return
+        inviteToken = token
+        prefs.edit().putString("pending_invite", token).apply()
+        previewInvite()
+    }
+    fun previewInvite() {
+        if (!mutable.value.profileReady) return
+        val token = inviteToken ?: prefs.getString("pending_invite", null) ?: return
+        inviteToken = token
+        viewModelScope.launch {
+            runCatching { repo.call("friendInvite", mapOf("token" to token)) }.onSuccess { result ->
+                val profile = result["profile"] as? Map<*, *>
+                mutable.update { it.copy(inviter = "${profile?.get("displayName")} (@${profile?.get("username")})") }
+            }.onFailure { notice(it.message ?: "Invitation unavailable"); closeInvite() }
+        }
+    }
+    fun closeInvite() { inviteToken = null; prefs.edit().remove("pending_invite").apply(); mutable.update { it.copy(inviter = null) } }
+    fun acceptInvite() = accountTask {
+        repo.call("friendInvite", mapOf("token" to inviteToken, "accept" to true)); closeInvite()
+        mutable.update { it.copy(tab = "Friends") }; notice("You are now friends")
+    }
+    fun setProposalPriority(priority: Boolean) { mutable.update { it.copy(proposal = it.proposal?.copy(priority = priority)) } }
+    fun leave(reminder: Reminder) = accountTask {
+        repo.call("leaveSharedReminder", mapOf("reminderId" to reminder.id)); notice("You left the reminder")
+    }
+    fun priorityOverride(reminder: Reminder, priority: Boolean?) = accountTask {
+        repo.call("setPriorityOverride", mapOf("reminderId" to reminder.id, "priority" to priority)); notice("Your alert preference was saved")
     }
 
     fun notificationsAllowed(): Boolean = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(
@@ -142,7 +224,11 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
                 if (mutable.value.uid != uid) return@launch
                 val reply = result["reply"] as? String ?: ""
                 val proposal = (result["proposal"] as? Map<*, *>)?.let { Proposal.fromMap(it) }
+                val choices = (result["recipientChoices"] as? List<*>)?.mapNotNull { item ->
+                    (item as? Map<*, *>)?.let { (it["displayName"] as? String ?: "") to (it["username"] as? String ?: "") }
+                } ?: emptyList()
                 mutable.update { it.copy(turns = it.turns + (text.trim() to reply), proposal = proposal,
+                    recipientChoices = choices, matchName = result["matchName"] as? String ?: "", originalText = result["originalText"] as? String ?: "",
                     speak = if (spoken && it.spokenReplies) reply else null) }
                 if (reply.isNotBlank()) completionHaptics.tryEmit(Unit)
             } catch (error: Exception) { notice(error.message ?: "Request failed") }
@@ -161,6 +247,12 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
             } catch (error: Exception) { notice(error.message ?: "Transcription failed")
                 mutable.update { it.copy(busy = false) } }
         }
+    }
+
+    fun chooseRecipient(username: String) {
+        val current = mutable.value
+        if (current.matchName.isBlank() || current.recipientChoices.none { it.second == username }) return
+        send(current.originalText.replace(current.matchName, "@$username", ignoreCase = true))
     }
 
     fun confirm() {

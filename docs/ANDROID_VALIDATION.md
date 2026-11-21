@@ -1,5 +1,16 @@
 # Android migration validation
 
+## Android friends release — 2026-11-21
+
+- Backend TypeScript build: passed.
+- Backend/shared tests: 57 passed, including quota boundaries, auth rejection, username reservation, invitation preview/accept/replay, shared edit conflicts, personal completion/snooze preservation, leaving, and deletion authorization.
+- Android JVM tests: 21 passed, including shared identity and personal priority persistence.
+- Debug application APK and device-test APK: built successfully. Device tests were compiled, not run on a phone/emulator.
+- Firestore transaction tests use a serialized in-memory harness; production contention and deployed rules were not emulator-tested in this session. Rules remain owner-read/server-write with no new client access to top-level collections.
+- Live Firebase settings, release signing, verified App Links, and two-phone delivery/permission checks remain release gates. Follow [FRIENDS_RELEASE_SETUP.md](FRIENDS_RELEASE_SETUP.md).
+
+Earlier validation entries below describe historical versions.
+
 Checked on 2026-11-03. The real Android Firebase configuration was added after
 the initial build-only verification; the Android tests and APK builds also pass
 with the real configuration.

@@ -13,3 +13,6 @@ android/.gradle-cache/
 android/**/build/
 android/local.properties
 android/.idea/
+
+*.keystore
+*.jks

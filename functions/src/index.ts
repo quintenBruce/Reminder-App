@@ -1,8 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import { authorize, consume, limits } from './limits';
+import { matchFriend, type Friend } from './friendMatching';
+import { commitShared, removeShared } from './sharing';
+export { accountProfile, saveProfile, listFriends, createFriendInvite, friendInvite, removeFriend, revokeFriendInvite } from './social';
+export { leaveSharedReminder, setPriorityOverride } from './sharing';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
+import { setGlobalOptions } from 'firebase-functions/v2';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { defineSecret } from 'firebase-functions/params';
 import { info, warn } from 'firebase-functions/logger';
@@ -16,6 +23,7 @@ import { reminderPushData } from './notificationPayload';
 import { canConfirmDraft, canDiscardDraft, purgeConversationProposals, purgeLegacyConversations } from './conversationCleanup';
 
 initializeApp();
+setGlobalOptions({ maxInstances: 2 });
 const db = getFirestore();
 const openAiKey = defineSecret('OPENAI_API_KEY');
 const region = process.env.FUNCTIONS_REGION || 'us-south1';
@@ -23,7 +31,7 @@ const model = process.env.OPENAI_MODEL || 'gpt-6.1-sol';
 
 type Action = 'create' | 'edit' | 'cancel' | 'delete' | 'done' | 'dismiss' | 'snooze' | 'list' | 'clarify';
 type ModelDecision = {
-  action: Action; targetId: string | null; title: string | null; notes: string | null;
+  recipientNames: string[]; action: Action; targetId: string | null; title: string | null; notes: string | null;
   kind: ScheduleRule['kind'] | null; at: string | null; startAt: string | null;
   everyMinutes: number | null; timeZone: string | null; hour: number | null;
   minute: number | null; daysOfWeek: number[]; dayOfMonth: number | null;
@@ -31,18 +39,20 @@ type ModelDecision = {
   month: number | null; endAt: string | null; repeatUntilDoneMinutes: number | null;
   snoozeMinutes: number | null; clearRepeatUntilDone: boolean; message: string;
 };
-type Proposal = {
+export type Proposal = {
   id: string; conversationId: string; action: Action; targetId: string | null; baseVersion: number | null;
   originalWording: string;
   title: string | null; notes: string | null; rule: ScheduleRule | null;
   repeatUntilDoneMinutes: number | null; snoozeMinutes: number | null;
   readback: string; preview: number[]; createdAt: number; expiresAt: number;
+  participantIds?: string[]; sharedId?: string; sharedVersion?: number; priority?: boolean;
   committedResult?: unknown;
 };
 
 const decisionSchema = {
   type: 'object', additionalProperties: false,
   properties: {
+    recipientNames: { type: 'array', items: { type: 'string' } },
     action: { type: 'string', enum: ['create', 'edit', 'cancel', 'delete', 'done', 'snooze', 'list', 'clarify'] },
     targetId: { type: ['string', 'null'] }, title: { type: ['string', 'null'] }, notes: { type: ['string', 'null'] },
     kind: { type: ['string', 'null'], enum: ['once', 'interval', 'daily', 'weekly', 'monthly', 'monthly_weekday', 'monthly_weekly', 'yearly', null] },
@@ -55,19 +65,9 @@ const decisionSchema = {
     repeatUntilDoneMinutes: { type: ['integer', 'null'] }, snoozeMinutes: { type: ['integer', 'null'] },
     clearRepeatUntilDone: { type: 'boolean' }, message: { type: 'string' },
   },
-  required: ['action', 'targetId', 'title', 'notes', 'kind', 'at', 'startAt', 'everyMinutes', 'timeZone',
+  required: ['recipientNames', 'action', 'targetId', 'title', 'notes', 'kind', 'at', 'startAt', 'everyMinutes', 'timeZone',
     'hour', 'minute', 'daysOfWeek', 'dayOfMonth', 'weekOfMonth', 'startDayOfMonth', 'month', 'endAt', 'repeatUntilDoneMinutes', 'snoozeMinutes', 'clearRepeatUntilDone', 'message'],
 } as const;
-
-function requireGoogleUser(request: CallableRequest): string {
-  const uid = request.auth?.uid;
-  const provider = request.auth?.token.firebase?.sign_in_provider;
-  const verified = request.auth?.token.email_verified;
-  if (!uid || provider !== 'google.com' || verified !== true) {
-    throw new HttpsError('permission-denied', 'Sign in with a verified Google account.');
-  }
-  return uid;
-}
 
 function root(uid: string) { return db.collection('users').doc(uid); }
 function conversationRef(uid: string, conversationId: string) { return root(uid).collection('conversations').doc(conversationId); }
@@ -148,23 +148,8 @@ function summarize(rule: ScheduleRule, dates: number[], deviceZone: string): str
 
 function openai() { return new OpenAI({ apiKey: openAiKey.value() }); }
 
-async function enforceQuota(uid: string, kind: 'transcribe' | 'interpret') {
-  const day = new Date().toISOString().slice(0, 10);
-  const ref = root(uid).collection('quotas').doc(`${day}_${kind}`);
-  const globalRef = db.collection('config').doc(`quota_${day}_${kind}`);
-  await db.runTransaction(async tx => {
-    const [snap, globalSnap] = await Promise.all([tx.get(ref), tx.get(globalRef)]);
-    const count = snap.exists ? Number(snap.get('count') || 0) : 0;
-    const globalCount = globalSnap.exists ? Number(globalSnap.get('count') || 0) : 0;
-    if (count >= 100) throw new HttpsError('resource-exhausted', 'Daily voice and interpretation limit reached.');
-    if (globalCount >= 30) throw new HttpsError('resource-exhausted', 'The app-wide daily AI limit was reached. Try again tomorrow.');
-    tx.set(ref, { count: count + 1, updatedAt: Date.now() });
-    tx.set(globalRef, { count: globalCount + 1, updatedAt: Date.now() });
-  });
-}
-
-export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstances: 2, memory: '512MiB', enforceAppCheck: true }, request => observe('transcribeAudio', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstances: 2, memory: '512MiB' }, request => observe('transcribeAudio', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const { audioBase64, mimeType } = request.data ?? {};
   const mediaType = typeof mimeType === 'string' ? mimeType.split(';')[0].trim().toLowerCase() : '';
   if (typeof audioBase64 !== 'string' || audioBase64.length > 7_000_000 ||
@@ -174,7 +159,7 @@ export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstanc
   const bytes = Buffer.from(audioBase64, 'base64');
   if (!bytes.length || bytes.length > 5_000_000) throw new HttpsError('invalid-argument', 'Recording exceeds 5 MB.');
   trace.stage('audio.validated', { mediaType, audioBytes: bytes.length });
-  await enforceQuota(uid, 'transcribe');
+  await consume(uid, 'ai');
   trace.stage('quota.accepted');
   const extension = mediaType.split('/')[1];
   const file = await toFile(bytes, `recording.${extension}`, { type: mediaType });
@@ -188,13 +173,15 @@ export const transcribeAudio = onCall({ region, secrets: [openAiKey], maxInstanc
   return { transcript };
 }));
 
-export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances: 2, enforceAppCheck: true }, request => observe('proposeAction', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances: 2 }, request => observe('proposeAction', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const utterance = textValue(request.data?.text, 4000);
   const conversationId = stringValue(request.data?.conversationId, 100) || randomUUID();
   const zone = stringValue(request.data?.timeZone, 80) || 'America/Chicago';
   const pendingProposalId = stringValue(request.data?.pendingProposalId, 100);
   try { Intl.DateTimeFormat('en', { timeZone: zone }); } catch { throw new HttpsError('invalid-argument', 'Invalid time zone.'); }
+  if (!(await root(uid).get()).get('profile')) throw new HttpsError('failed-precondition', 'Complete your profile first.');
+  const friends = (await root(uid).collection('friends').limit(limits.friends).get()).docs.map(doc => ({ uid: doc.id, ...doc.data() })) as Friend[];
   const remindersRef = root(uid).collection('reminders');
   const [candidatesSnap, turnsSnap, pendingSnap] = await Promise.all([
     Promise.all([remindersRef.where('status', '==', 'active').limit(40).get(),
@@ -208,14 +195,14 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     .filter(r => !r.deletionRequestedAt);
   const history = turnsSnap.docs.reverse().map(doc => ({ user: doc.get('user'), assistant: doc.get('assistant') }));
   trace.stage('context.loaded', { conversationId, candidateCount: candidates.length, historyCount: history.length, hasPendingProposal: !!pending });
-  await enforceQuota(uid, 'interpret');
+  await consume(uid, 'ai');
   trace.stage('quota.accepted');
   const aiStartedAt = Date.now();
   const response = await openai().responses.create({
     model, store: false, reasoning: { effort: 'low' },
     max_output_tokens: 2000,
     text: { format: { type: 'json_schema', name: 'reminder_decision', strict: true, schema: decisionSchema } },
-    instructions: `You interpret personal reminder requests. Current instant: ${new Date().toISOString()}. Device IANA zone: ${zone}. Resolve references only to candidate IDs. If ambiguous or a time is missing, clarify. For create/edit return a complete schedule using an ISO offset instant in at/startAt. For a wall-clock recurrence choose an IANA timeZone and local hour/minute. Weekdays use 1=Monday through 7=Sunday. "Every 3rd Sunday of the month" uses kind=monthly_weekday, daysOfWeek=[7], weekOfMonth=3. For the last weekday of a month use weekOfMonth=-1; a fifth weekday occurs only in months that have one. "Starting the 10th of every month, every Friday" uses kind=monthly_weekly, daysOfWeek=[5], startDayOfMonth=10; the cutoff resets each month. Use startAt for the earliest allowed occurrence, not for that repeating monthly cutoff. A request like "every 5 minutes until done" is a one-time occurrence with repeatUntilDoneMinutes=5, not a perpetual interval rule. For an edit, provide the entire replacement schedule when changing timing; otherwise kind=null preserves it. Use clearRepeatUntilDone=true only if the user removes those nudges. If the user revises a pending creation, return action=create with full revised fields. Use delete for delete/remove/erase requests: it permanently erases the reminder and its related records after confirmation. Cancel only stops scheduling and retains history. Never offer dismiss. Keep responses short. Never invent a target ID.`,
+    instructions: `You interpret reminder requests. Extract friend names into recipientNames when the user asks to share a NEW reminder. For existing reminders preserve membership and return an empty recipientNames array. Never invent recipients. Friends: ${JSON.stringify(friends)}. Current instant: ${new Date().toISOString()}. Device IANA zone: ${zone}. Resolve references only to candidate IDs. If ambiguous or a time is missing, clarify. For create/edit return a complete schedule using an ISO offset instant in at/startAt. For a wall-clock recurrence choose an IANA timeZone and local hour/minute. Weekdays use 1=Monday through 7=Sunday. "Every 3rd Sunday of the month" uses kind=monthly_weekday, daysOfWeek=[7], weekOfMonth=3. For the last weekday of a month use weekOfMonth=-1; a fifth weekday occurs only in months that have one. "Starting the 10th of every month, every Friday" uses kind=monthly_weekly, daysOfWeek=[5], startDayOfMonth=10; the cutoff resets each month. Use startAt for the earliest allowed occurrence, not for that repeating monthly cutoff. A request like "every 5 minutes until done" is a one-time occurrence with repeatUntilDoneMinutes=5, not a perpetual interval rule. For an edit, provide the entire replacement schedule when changing timing; otherwise kind=null preserves it. Use clearRepeatUntilDone=true only if the user removes those nudges. If the user revises a pending creation, return action=create with full revised fields. Use delete for delete/remove/erase requests: it permanently erases the reminder and its related records after confirmation. Cancel only stops scheduling and retains history. Never offer dismiss. Keep responses short. Never invent a target ID.`,
     input: JSON.stringify({ utterance, history, pendingProposal: pending ? { action: pending.action, targetId: pending.targetId, title: pending.title, notes: pending.notes, rule: pending.rule, repeatUntilDoneMinutes: pending.repeatUntilDoneMinutes, snoozeMinutes: pending.snoozeMinutes } : null,
       candidates: candidates.map(r => ({ id: r.id, title: r.title, status: r.status, rule: r.rule, repeatUntilDoneMinutes: r.repeatUntilDoneMinutes, nextDueAt: r.nextDueAt })) }),
   });
@@ -226,7 +213,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
   if (['edit', 'cancel', 'delete', 'done', 'snooze'].includes(d.action) && !candidate) {
     d.action = 'clarify'; d.message = 'Which reminder do you mean?';
   }
-  if (candidate?.status !== 'active' && ['edit', 'cancel', 'done', 'snooze'].includes(d.action)) {
+  if (candidate?.status !== 'active' && ['edit', 'cancel', 'done', 'snooze'].includes(d.action) && !(candidate?.sharedId && ['edit', 'cancel'].includes(d.action))) {
     d.action = 'clarify'; d.message = 'That reminder is no longer active. You can delete it from History.';
   }
   if (candidate && ['done', 'snooze'].includes(d.action) && !hasCurrentAlert(candidate)) {
@@ -243,6 +230,19 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     trace.stage('conversation.saved', { conversationId, action: d.action });
     return { conversationId, reply, proposal: null };
   }
+  const participantIds: string[] = [...(pending?.participantIds || [])];
+  if (d.action === 'create' && d.recipientNames?.length) {
+    participantIds.length = 0;
+    for (const name of d.recipientNames) {
+      const matches = matchFriend(name, friends);
+      if (matches.length !== 1) return { conversationId, proposal: null,
+        recipientChoices: matches.map(f => ({ displayName: f.displayName, username: f.username })), matchName: name, originalText: utterance,
+        reply: matches.length
+        ? `Which ${name}? Please repeat the request using a username: ${matches.map(f => '@' + f.username).join(', ')}`
+        : `No friend matches “${name}”. Add them in Friends first, or repeat using their exact username.` };
+      participantIds.push(matches[0].uid);
+    }
+  }
   let rule: ScheduleRule | null = null;
   let preview: number[] = [];
   const nudgeMinutes = d.clearRepeatUntilDone ? null : (d.repeatUntilDoneMinutes ?? candidate?.repeatUntilDoneMinutes ?? pending?.repeatUntilDoneMinutes ?? null);
@@ -250,18 +250,22 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     rule = checkedRule(d, candidate, pending);
     validateNudge(nudgeMinutes);
     preview = previewOccurrences(rule, now);
-    if (!preview.length) throw new HttpsError('invalid-argument', 'This schedule has no future occurrence.');
+    if (!preview.length && !(candidate?.sharedId && d.action === 'edit' && isDeepStrictEqual(rule, candidate.rule)))
+      throw new HttpsError('invalid-argument', 'This schedule has no future occurrence.');
   }
   if (d.action === 'snooze' && (!Number.isInteger(d.snoozeMinutes) || (d.snoozeMinutes ?? 0) < 5 || (d.snoozeMinutes ?? 0) > 525_600)) {
     throw new HttpsError('invalid-argument', 'Snooze must be at least five minutes.');
   }
   const title = d.action === 'create' ? textValue(d.title || pending?.title, 200) : (d.title ? textValue(d.title, 200) : candidate?.title || null);
   const notes = d.notes === null ? candidate?.notes ?? pending?.notes ?? '' : stringValue(d.notes, 1000);
-  const readback = d.action === 'create' || d.action === 'edit'
+  let readback = d.action === 'create' || d.action === 'edit'
     ? `${d.action === 'create' ? 'Create' : 'Change'} “${title}”${notes ? ` (${notes})` : ''}: ${summarize(rule!, preview, zone)}; follow up every ${nudgeMinutes ?? 30} minutes until Done. Confirm?`
     : d.action === 'delete' ? `Permanently delete “${candidate!.title}” and its reminder records? This cannot be undone. Confirm?`
       : `${d.action === 'snooze' ? `Snooze “${candidate!.title}” for ${d.snoozeMinutes} minutes` : `${d.action[0].toUpperCase()}${d.action.slice(1)} “${candidate!.title}”`}. Confirm?`;
+  if (participantIds.length) readback += ` Shared with ${friends.filter(f => participantIds.includes(f.uid)).map(f => `${f.displayName} (@${f.username})`).join(', ')}. Everyone can edit; Done and snooze are personal.`;
   const proposal: Proposal = {
+    participantIds, ...(candidate?.sharedId ? { sharedId: candidate.sharedId, sharedVersion: candidate.sharedVersion } : {}),
+    priority: candidate?.sharedPriority ?? candidate?.priority ?? false,
     id: randomUUID(), conversationId, action: d.action, targetId: candidate?.id ?? null, baseVersion: candidate?.version ?? null,
     originalWording: utterance,
     title, notes, rule, repeatUntilDoneMinutes: nudgeMinutes,
@@ -317,8 +321,8 @@ async function applyAction(uid: string, reminderId: string, action: 'done' | 'di
   });
 }
 
-export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, request => observe('applyOccurrenceAction', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const applyOccurrenceAction = onCall({ region }, request => observe('applyOccurrenceAction', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const reminderId = textValue(request.data?.reminderId, 100);
   const action = request.data?.action;
   if (!['done', 'dismiss', 'snooze'].includes(action)) throw new HttpsError('invalid-argument', 'Invalid action.');
@@ -332,6 +336,8 @@ export const applyOccurrenceAction = onCall({ region, enforceAppCheck: true }, r
 }));
 
 async function deleteReminderData(uid: string, reminderId: string, expectedVersion?: number | null) {
+  if ((await root(uid).collection('reminders').doc(reminderId).get()).get('sharedId'))
+    return removeShared(uid, reminderId, false, expectedVersion ?? undefined);
   const owner = root(uid);
   const reminder = owner.collection('reminders').doc(reminderId);
   const stoppedAt = Date.now();
@@ -370,8 +376,8 @@ async function deleteReminderData(uid: string, reminderId: string, expectedVersi
   return { reminderId, deleted: true, removed };
 }
 
-export const deleteReminder = onCall({ region, enforceAppCheck: true, timeoutSeconds: 540 }, request => observe('deleteReminder', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const deleteReminder = onCall({ region, timeoutSeconds: 540 }, request => observe('deleteReminder', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const reminderId = textValue(request.data?.reminderId, 100);
   const expectedVersion = request.data?.expectedVersion;
   if (expectedVersion != null && (!Number.isInteger(expectedVersion) || expectedVersion < 0)) {
@@ -406,8 +412,8 @@ export const deleteReminder = onCall({ region, enforceAppCheck: true, timeoutSec
   return result;
 }));
 
-export const confirmProposal = onCall({ region, enforceAppCheck: true, timeoutSeconds: 540 }, request => observe('confirmProposal', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const confirmProposal = onCall({ region, timeoutSeconds: 540 }, request => observe('confirmProposal', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const proposalId = textValue(request.data?.proposalId, 100);
   const ref = root(uid).collection('proposals').doc(proposalId);
   const snap = await ref.get();
@@ -438,6 +444,7 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true, timeoutSe
     trace.stage('proposal.committed', { proposalId, reminderId: p.targetId, action: p.action });
     return result;
   }
+  if (p.sharedId || p.participantIds?.length) return commitShared(uid, p, typeof request.data?.priority === 'boolean' ? request.data.priority : p.priority === true);
   const target = p.targetId ? root(uid).collection('reminders').doc(p.targetId) : root(uid).collection('reminders').doc();
   const now = Date.now();
   const result = await db.runTransaction(async tx => {
@@ -454,11 +461,16 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true, timeoutSe
     if (p.targetId && (!existing || existing.version !== p.baseVersion)) {
       throw new HttpsError('failed-precondition', 'Reminder changed. Please ask again.');
     }
+    if (p.action === 'create') {
+      const active = await tx.get(root(uid).collection('reminders').where('status', '==', 'active'));
+      if (active.size >= limits.active) throw new HttpsError('resource-exhausted', 'Active reminder limit reached.');
+    }
     if (p.action === 'create' || p.action === 'edit') {
       if (!p.rule || !p.title) throw new HttpsError('internal', 'Incomplete proposal.');
       const nextDueAt = nextOccurrence(p.rule, now);
       if (!nextDueAt) throw new HttpsError('failed-precondition', 'The proposed time has passed.');
       const next: ReminderRecord = {
+        priority: typeof request.data?.priority === 'boolean' ? request.data.priority : p.priority === true,
         id: target.id, title: p.title, notes: p.notes ?? '', originalWording: p.originalWording,
         rule: p.rule, repeatUntilDoneMinutes: p.repeatUntilDoneMinutes,
         status: 'active', nextDueAt, currentScheduledAt: null,
@@ -479,10 +491,12 @@ export const confirmProposal = onCall({ region, enforceAppCheck: true, timeoutSe
   return result;
 }));
 
-export const registerDevice = onCall({ region, enforceAppCheck: true }, request => observe('registerDevice', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const registerDevice = onCall({ region }, request => observe('registerDevice', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const token = textValue(request.data?.token, 4096);
   const test = request.data?.test === true;
+  if (request.data?.platform !== 'android') throw new HttpsError('failed-precondition', 'Install the current Android app. Web push is retired.');
+  if (test) await consume(uid, 'test');
   const id = createHash('sha256').update(token).digest('hex');
   try {
     await getMessaging().send({ token, data: { title: 'Remind is ready', body: 'Notifications are connected.', reminderId: 'test', alertId: randomUUID(), uid, url: '/' },
@@ -497,19 +511,21 @@ export const registerDevice = onCall({ region, enforceAppCheck: true }, request 
   const ownerRef = db.collection('deviceTokens').doc(id);
   await db.runTransaction(async tx => {
     const previous = await tx.get(ownerRef);
+    const devices = await tx.get(root(uid).collection('devices'));
+    if (!devices.docs.some(doc => doc.id === id) && devices.size >= limits.devices) throw new HttpsError('resource-exhausted', 'Device limit reached. Sign out an old device first.');
     const previousUid = previous.get('uid');
     if (typeof previousUid === 'string' && previousUid !== uid) {
       tx.delete(root(previousUid).collection('devices').doc(id));
     }
     tx.set(ownerRef, { uid, updatedAt: Date.now() });
-    tx.set(root(uid).collection('devices').doc(id), { token, updatedAt: Date.now() });
+    tx.set(root(uid).collection('devices').doc(id), { token, platform: 'android', updatedAt: Date.now() });
   });
   trace.stage('device.registered', { test });
   return { registered: true };
 }));
 
-export const unregisterDevice = onCall({ region, enforceAppCheck: true }, request => observe('unregisterDevice', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const unregisterDevice = onCall({ region }, request => observe('unregisterDevice', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const token = textValue(request.data?.token, 4096);
   const id = createHash('sha256').update(token).digest('hex');
   const ownerRef = db.collection('deviceTokens').doc(id);
@@ -522,8 +538,8 @@ export const unregisterDevice = onCall({ region, enforceAppCheck: true }, reques
   return { unregistered: true };
 }));
 
-export const deleteConversation = onCall({ region, enforceAppCheck: true }, request => observe('deleteConversation', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const deleteConversation = onCall({ region }, request => observe('deleteConversation', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const conversationId = textValue(request.data?.conversationId, 100);
   if (request.data?.draftOnly === true) {
     if (!await claimDraftForDeletion(uid, conversationId)) {
@@ -536,8 +552,8 @@ export const deleteConversation = onCall({ region, enforceAppCheck: true }, requ
   return { deleted: true };
 }));
 
-export const initializeConversations = onCall({ region, enforceAppCheck: true, timeoutSeconds: 540 }, request => observe('initializeConversations', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const initializeConversations = onCall({ region, timeoutSeconds: 540 }, request => observe('initializeConversations', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const owner = root(uid);
   if ((await owner.get()).get('conversationSchemaVersion') === 2) return { deleted: 0 };
   const documents = await owner.collection('conversations').listDocuments();
@@ -549,8 +565,8 @@ export const initializeConversations = onCall({ region, enforceAppCheck: true, t
   return { deleted };
 }));
 
-export const ensureAcknowledgmentPolicy = onCall({ region, enforceAppCheck: true, timeoutSeconds: 540 }, request => observe('ensureAcknowledgmentPolicy', request.auth?.uid, async trace => {
-  const uid = requireGoogleUser(request);
+export const ensureAcknowledgmentPolicy = onCall({ region, timeoutSeconds: 540 }, request => observe('ensureAcknowledgmentPolicy', request.auth?.uid, async trace => {
+  const uid = await authorize(request);
   const reminders = await root(uid).collection('reminders').get();
   let updated = 0;
   for (const doc of reminders.docs) {
@@ -639,7 +655,7 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
     const occurrenceId = `${claimed.id}_${scheduledAt}`;
     info('dispatchDue.claimed', { operation: 'dispatchDue', operationId, uid, reminderId: claimed.id, occurrenceId, scheduledAt });
     const devices = await root(uid).collection('devices').get();
-    const targets = devices.docs.filter(device => typeof device.get('token') === 'string' && device.get('token'));
+    const targets = devices.docs.filter(device => device.get('platform') === 'android' && typeof device.get('token') === 'string' && device.get('token'));
     const selected = targets.slice(0, 500);
     let diagnostic = deliveryDiagnostic(selected.length);
     if (selected.length) {
@@ -649,7 +665,7 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
           data: { ...reminderPushData(claimed.title, claimed.notes, claimed.id, `${claimed.id}_${scheduledAt}`,
             `${claimed.id}_${claimed.nextDueAt}`), uid },
           android: { priority: 'high', ttl: 3_600_000 },
-          webpush: { headers: { TTL: '3600' } },
+
         });
         diagnostic = deliveryDiagnostic(selected.length, results.responses);
         const invalid = results.responses.flatMap((response, i) =>
@@ -693,3 +709,6 @@ export const dispatchDue = onSchedule({ schedule: '* * * * *', timeZone: 'UTC', 
     throw reason;
   }
 });
+
+
+export { syncReminderDevices } from './reminderSync';

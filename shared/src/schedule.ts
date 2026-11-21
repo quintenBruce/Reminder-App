@@ -18,6 +18,7 @@ export type ScheduleRule =
     };
 
 export interface ReminderRecord {
+  sharedId?: string; sharedVersion?: number; priority?: boolean; sharedPriority?: boolean;
   id: string;
   title: string;
   notes: string;

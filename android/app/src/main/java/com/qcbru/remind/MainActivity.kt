@@ -186,6 +186,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleReminderIntent(intent: Intent) {
+        val link = intent.data
+        if (link?.scheme == "https" && link.host == "reminder-app-a2150.web.app" && link.pathSegments.firstOrNull() == "invite") {
+            link.pathSegments.getOrNull(1)?.let(model::receiveInvite)
+            return
+        }
         val uid = intent.getStringExtra("uid")
         if (uid != null && uid != RemindRepository(this).cachedUid()) return
         val reminderId = intent.getStringExtra("reminderId") ?: return
@@ -255,6 +260,9 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
             focusManager.clearFocus()
         }
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var filter by rememberSaveable { mutableStateOf("All") }
+    var leaving by remember { mutableStateOf<Reminder?>(null) }
     var search by rememberSaveable { mutableStateOf("") }
     var deleting by remember { mutableStateOf<Reminder?>(null) }
     var deleteSession by remember { mutableStateOf(false) }
@@ -266,8 +274,8 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
         ) },
         snackbarHost = { SnackbarHost(snackbar) },
-        bottomBar = { if (state.uid != null && !imeVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-            listOf("Ask", "Upcoming", "History", "Settings").forEach { tab ->
+        bottomBar = { if (state.uid != null && state.profileReady && !imeVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            listOf("Ask", "Upcoming", "History", "Friends", "Settings").forEach { tab ->
                 NavigationBarItem(selected = state.tab == tab, onClick = { model.setTab(tab) },
                     icon = { Icon(when (tab) {
                         "Ask" -> Icons.Default.Mic
@@ -279,6 +287,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
             }
         } } ) { padding ->
         if (state.uid == null) WelcomeScreen(Modifier.fillMaxSize().padding(padding), onSignIn)
+        else if (!state.profileReady) ProfileScreen(state, model, Modifier.fillMaxSize().padding(padding))
         else when (state.tab) {
             "Ask" -> Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(
@@ -303,6 +312,14 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                     items(state.turns) { (user, assistant) ->
                         ConversationTurn(user, assistant)
                     }
+                    if (state.recipientChoices.isNotEmpty()) item {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Choose a friend", style = MaterialTheme.typography.titleMedium)
+                            state.recipientChoices.forEach { (name, username) ->
+                                OutlinedButton(enabled = !state.busy, onClick = { model.chooseRecipient(username) }) { Text("$name (@$username)") }
+                            }
+                        }
+                    }
                     state.proposal?.let { proposal -> item {
                         Card(colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
@@ -311,13 +328,21 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                                     style = MaterialTheme.typography.titleMedium)
                                 Text(proposal.readback, style = MaterialTheme.typography.bodyLarge)
                                 if (proposal.action == "create" || proposal.action == "edit") {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        androidx.compose.material3.Checkbox(checked = proposal.priority, onCheckedChange = { model.setProposalPriority(it) })
+                                        Text("Priority alarm")
+                                    }
+                                    if (proposal.priority) {
+                                        Text("Fullscreen alarm when permitted. Shared with everyone; each person can override it.", style = MaterialTheme.typography.bodySmall)
+                                        PriorityAccessButton()
+                                    }
                                     Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
                                     proposal.preview.take(5).forEach { Text(dateLabel(it),
                                         style = MaterialTheme.typography.bodyMedium) }
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(enabled = !state.busy,
-                                        onClick = { onHaptic(); onConfirm() }) { Text("Confirm") }
+                                        onClick = { onHaptic(); onConfirm() }) { Text(if (proposal.action == "create") "Create" else "Confirm") }
                                     TextButton(onClick = model::cancelProposal) { Text("Cancel") }
                                 }
                             }
@@ -359,9 +384,14 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                 onRefresh = model::refresh, modifier = Modifier.fillMaxSize().padding(padding)) { LazyColumn(Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                val upcoming = state.reminders.filter { it.active && it.title.contains(search, true) }
+                val upcoming = state.reminders.filter { it.active && it.title.contains(search, true) && (filter == "All" || (filter == "Shared") == (it.sharedId != null)) }
                     .sortedBy { it.nextDueAt }
                 item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("All", "Personal", "Shared").forEach { label ->
+                            FilterChip(selected = filter == label, onClick = { filter = label }, label = { Text(label) })
+                        }
+                    }
                     ScreenHeading("Upcoming", "Scheduled reminders and items needing attention.")
                     Spacer(Modifier.height(18.dp))
                     OutlinedTextField(search, { search = it },
@@ -376,6 +406,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                 items(upcoming, key = { it.id }) { reminder -> ReminderCard(reminder,
                     onEdit = { draft = "Change my reminder “${reminder.title}” to "; model.setTab("Ask") },
                     onHistory = { model.openHistory(reminder.id) }, onDelete = { deleting = reminder },
+                    onLeave = { leaving = reminder }, onPriority = { model.priorityOverride(reminder, it) },
                     onAction = { onHaptic(); model.act(reminder, it) }) }
                 if (upcoming.isEmpty()) item {
                     EmptyState(if (search.isBlank()) "Nothing scheduled yet" else "No matching reminders",
@@ -392,6 +423,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                 items(past, key = { it.id }) { reminder -> ReminderCard(reminder,
                     onEdit = { draft = "Change my reminder “${reminder.title}” to "; model.setTab("Ask") },
                     onHistory = { model.openHistory(reminder.id) }, onDelete = { deleting = reminder },
+                    onLeave = { leaving = reminder }, onPriority = { model.priorityOverride(reminder, it) },
                     onAction = { model.act(reminder, it) }) }
                 if (past.isEmpty() && state.events.isEmpty()) item {
                     EmptyState("No history yet", "Completed reminders and actions appear here.")
@@ -412,6 +444,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
                     }
                 }
             } }
+            "Friends" -> FriendsScreen(state, model, Modifier.fillMaxSize().padding(padding))
             else -> SettingsScreen(state, Modifier.fillMaxSize().padding(padding).padding(16.dp),
                 onTheme = model::setTheme, onSpoken = model::setSpokenReplies,
                 onNotifications = onNotifications, onExactAlarms = onExactAlarms,
@@ -434,8 +467,16 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
             Text("A regular reminder may arrive sooner.", style = MaterialTheme.typography.bodySmall)
         } },
         confirmButton = { TextButton(onClick = model::closeSnoozeChooser) { Text("Cancel") } })
+    state.inviter?.let { name -> AlertDialog(onDismissRequest = model::closeInvite,
+        title = { Text("Add $name?") }, text = { Text("You will both become friends and can share reminders.") },
+        confirmButton = { TextButton(onClick = model::acceptInvite, enabled = !state.busy) { Text("Add Friend") } },
+        dismissButton = { TextButton(onClick = model::closeInvite) { Text("Cancel") } }) }
+    leaving?.let { reminder -> AlertDialog(onDismissRequest = { leaving = null }, title = { Text("Leave this reminder?") },
+        text = { Text("Your alerts stop. Other participants keep the shared reminder.") },
+        confirmButton = { TextButton(onClick = { model.leave(reminder); leaving = null }) { Text("Leave") } },
+        dismissButton = { TextButton(onClick = { leaving = null }) { Text("Cancel") } }) }
     deleting?.let { reminder -> AlertDialog(onDismissRequest = { deleting = null },
-        title = { Text("Delete reminder?") },
+        title = { Text(if (reminder.sharedId != null) "Delete for everyone?" else "Delete reminder?") },
         text = { Text("“${reminder.title}” and its records will be permanently deleted.") },
         confirmButton = { TextButton(onClick = { model.delete(reminder); deleting = null }) { Text("Delete permanently") } },
         dismissButton = { TextButton(onClick = { deleting = null }) { Text("Keep") } }) }
@@ -478,7 +519,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel, recording
 
 @Composable
 internal fun ReminderCard(reminder: Reminder, onEdit: () -> Unit, onHistory: () -> Unit,
-    onDelete: () -> Unit, onAction: (String) -> Unit) {
+    onDelete: () -> Unit, onAction: (String) -> Unit, onLeave: () -> Unit = {}, onPriority: (Boolean?) -> Unit = {}) {
     var menuExpanded by remember { mutableStateOf(false) }
     var scheduleExpanded by rememberSaveable(reminder.id) { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth(),
@@ -506,12 +547,19 @@ internal fun ReminderCard(reminder: Reminder, onEdit: () -> Unit, onHistory: () 
                         DropdownMenuItem(text = { Text("Conversations") },
                             leadingIcon = { Icon(Icons.Default.ChatBubbleOutline, contentDescription = null) },
                             onClick = { menuExpanded = false; onHistory() })
-                        DropdownMenuItem(text = { Text("Delete") },
+                        if (reminder.sharedId != null) DropdownMenuItem(text = { Text("Leave shared reminder") },
+                            onClick = { menuExpanded = false; onLeave() })
+                        DropdownMenuItem(text = { Text("My alerts: normal") }, onClick = { menuExpanded = false; onPriority(false) })
+                        DropdownMenuItem(text = { Text("My alerts: priority") }, onClick = { menuExpanded = false; onPriority(true) })
+                        if (reminder.sharedId != null) DropdownMenuItem(text = { Text("My alerts: follow shared setting") }, onClick = { menuExpanded = false; onPriority(null) })
+                        DropdownMenuItem(text = { Text(if (reminder.sharedId != null) "Delete for everyone" else "Delete") },
                             leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null) },
                             onClick = { menuExpanded = false; onDelete() })
                     }
                 }
             }
+            if (reminder.sharedId != null) Text("Shared · ${reminder.participantNames.joinToString()}", style = MaterialTheme.typography.bodySmall)
+            if (reminder.priority) { Text("Priority alarm", style = MaterialTheme.typography.labelMedium); PriorityAccessButton() }
             if (reminder.notes.isNotBlank()) Text(reminder.notes,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)

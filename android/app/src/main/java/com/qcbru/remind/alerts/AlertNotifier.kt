@@ -63,11 +63,20 @@ object AlertNotifier {
             data = Uri.parse("remind://open/$identity")
             putExtra("reminderId", reminderId)
         }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(context, "reminders")
+        val priority = store(context).reminder(uid, reminderId)?.priority == true
+        val notification = NotificationCompat.Builder(context, if (priority) "priority_alarms" else "reminders")
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title).setContentText(body.takeIf { it.isNotBlank() })
             .setPriority(NotificationCompat.PRIORITY_HIGH).setAutoCancel(true)
             .setContentIntent(open)
+        if (priority && !silent) {
+            val alarm = PendingIntent.getActivity(context, 0, Intent(context, PriorityAlarmActivity::class.java).apply {
+                data = Uri.parse("remind://priority/$identity")
+                putExtra("uid", uid); putExtra("reminderId", reminderId); putExtra("occurrenceId", occurrenceId)
+            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            notification.setCategory(NotificationCompat.CATEGORY_ALARM)
+            if (Build.VERSION.SDK_INT < 34 || manager(context).canUseFullScreenIntent()) notification.setFullScreenIntent(alarm, true)
+        }
         if (silent) notification.setSilent(true)
         if (reminderId != "test") for (action in listOf("done", "later")) {
             if (action == "later") {

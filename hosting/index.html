@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Remind for Android</title>
+<style>body{font:18px system-ui;max-width:38rem;margin:10vh auto;padding:24px;background:#f6f8f5;color:#182523}h1{color:#285e59}li{margin:16px 0}a{color:#285e59}</style>
+<h1>Remind for Android</h1>
+<p>The web app has retired. Your reminders remain in your Google account.</p>
+<ol><li>Ask your friend for the Remind APK and install it on your Android phone.</li><li>Open Remind, sign in with Google, and choose your name and username.</li><li>Return to your invitation message and tap the link again. Review the name, then tap <strong>Add Friend</strong>.</li></ol>
+<p>If the link opens here again, open Android Settings → Apps → Remind → Open by default and enable supported links.</p>
+<p>No iPhone or browser app is available.</p>
+<script>
+if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(async regs => {
+  for (const reg of regs) { const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); await reg.unregister(); }
+});
+if ('caches' in window) caches.keys().then(keys => Promise.all(keys.map(key => caches.delete(key))));
+</script></html>

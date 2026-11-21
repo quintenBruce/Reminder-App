@@ -13,6 +13,7 @@ class RemindMessagingService : FirebaseMessagingService() {
         val data = message.data
         if (data["uid"] != uid) return
         val reminderId = data["reminderId"] ?: return
+        if (reminderId != "test") { com.qcbru.remind.data.ReminderSync.enqueue(this, data); return }
         val occurrenceId = data["occurrenceId"] ?: reminderId
         val alertId = data["alertId"] ?: occurrenceId
         AlertNotifier.show(this, uid, data["title"] ?: "Remind", data["body"] ?: "",

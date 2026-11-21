@@ -41,6 +41,20 @@ class LocalStoreTest {
         assertEquals(1, store.reminders("bob").size)
     }
 
+    @Test fun preservesSharedIdentityAndPersonalPriorityAcrossRestart() {
+        val shared = reminder("shared").copy(sharedId = "shared", sharedVersion = 3L,
+            participantNames = listOf("Alice", "Bob"), priority = false, priorityOverride = false)
+        store.saveReminder("alice", shared)
+        store.saveReminder("bob", shared.copy(priority = true, priorityOverride = null))
+        store.close()
+        store = LocalStore(RuntimeEnvironment.getApplication())
+        assertEquals(3L, store.reminder("alice", "shared")?.sharedVersion)
+        assertEquals(listOf("Alice", "Bob"), store.reminder("alice", "shared")?.participantNames)
+        assertEquals(false, store.reminder("alice", "shared")?.priorityOverride)
+        assertEquals(true, store.reminder("bob", "shared")?.priority)
+        assertNull(store.reminder("bob", "shared")?.priorityOverride)
+    }
+
     @Test fun deduplicatesTheSameAlertButKeepsLaterNudges() {
         assertTrue(store.claimAlert("alice", "r1_100", "r1_1", 100, "local", 120_000))
         assertFalse(store.claimAlert("alice", "r1_100", "r1_1", 101, "push", 120_000))

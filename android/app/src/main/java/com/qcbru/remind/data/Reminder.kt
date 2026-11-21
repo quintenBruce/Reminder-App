@@ -17,6 +17,11 @@ data class Reminder(
     val repeatUntilDoneMinutes: Int?,
     val version: Long,
     val updatedAt: Long,
+    val sharedId: String? = null,
+    val sharedVersion: Long? = null,
+    val participantNames: List<String> = emptyList(),
+    val priority: Boolean = false,
+    val priorityOverride: Boolean? = null,
 ) {
     val active get() = status == "active" && nextDueAt != null
     val currentAlert get() = lastScheduledAt != null && lastSentAt != null &&
@@ -24,6 +29,7 @@ data class Reminder(
     val occurrenceId get() = lastScheduledAt?.let { "${id}_$it" }
 
     fun asJson(): JSONObject = JSONObject().apply {
+        put("sharedId", sharedId); put("sharedVersion", sharedVersion); put("participantNames", org.json.JSONArray(participantNames)); put("priority", priority); put("priorityOverride", priorityOverride)
         put("id", id); put("title", title); put("notes", notes); put("rule", rule)
         put("status", status); put("nextDueAt", nextDueAt); put("currentScheduledAt", currentScheduledAt)
         put("lastScheduledAt", lastScheduledAt); put("lastSentAt", lastSentAt)
@@ -44,6 +50,11 @@ data class Reminder(
             lastAcknowledgedScheduledAt = json.longOrNull("lastAcknowledgedScheduledAt"),
             repeatUntilDoneMinutes = json.intOrNull("repeatUntilDoneMinutes"), version = json.optLong("version"),
             updatedAt = json.optLong("updatedAt"),
+            sharedId = if (json.isNull("sharedId")) null else json.optString("sharedId").takeIf { it.isNotBlank() },
+            sharedVersion = json.longOrNull("sharedVersion"),
+            participantNames = json.optJSONArray("participantNames")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
+            priority = json.optBoolean("priority"),
+            priorityOverride = if (json.isNull("priorityOverride")) null else json.getBoolean("priorityOverride"),
         )
     }
 }
@@ -69,9 +80,11 @@ data class Proposal(
     val preview: List<Long>,
     val targetId: String?,
     val baseVersion: Long?,
+    val priority: Boolean = false,
 ) {
     companion object {
         fun fromMap(map: Map<*, *>): Proposal = Proposal(
+            priority = map["priority"] as? Boolean ?: false,
             id = map["id"] as String,
             action = map["action"] as String,
             readback = map["readback"] as String,

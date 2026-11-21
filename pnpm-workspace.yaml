@@ -1,5 +1,4 @@
 packages:
-  - web
   - functions
 nodeLinker: hoisted
 packageImportMethod: copy

@@ -86,7 +86,7 @@ class RemindRepository(private val context: Context) {
     suspend fun confirm(proposal: Proposal) {
         if (proposal.action == "delete") call("deleteReminder", mapOf("reminderId" to proposal.targetId,
             "expectedVersion" to proposal.baseVersion, "proposalId" to proposal.id))
-        else call("confirmProposal", mapOf("proposalId" to proposal.id))
+        else call("confirmProposal", mapOf("proposalId" to proposal.id, "priority" to proposal.priority))
     }
 
     suspend fun deleteReminder(reminder: Reminder) {
@@ -108,6 +108,7 @@ class RemindRepository(private val context: Context) {
 
     suspend fun refreshReminder(uid: String, id: String) {
         val doc = database.collection("users").document(uid).collection("reminders").document(id).get(Source.SERVER).await()
+        if (auth.currentUser?.uid != uid || cachedUid() != uid) return
         if (doc.exists()) store.saveReminder(uid, Reminder.fromDocument(doc))
         else store.removeReminder(uid, id)
         AlertNotifier.reconcile(context, uid, store.reminders(uid))
@@ -120,7 +121,7 @@ class RemindRepository(private val context: Context) {
     suspend fun registerPush(test: Boolean) {
         val uid = auth.currentUser?.uid ?: error("Sign in first")
         val token = FirebaseMessaging.getInstance().token.await()
-        call("registerDevice", mapOf("token" to token, "test" to test))
+        call("registerDevice", mapOf("token" to token, "test" to test, "platform" to "android"))
         val old = preferences.getString("push_token", null)
         if (old != null && old != token) call("unregisterDevice", mapOf("token" to old))
         preferences.edit().putString("push_token", token).putString("uid", uid).apply()
@@ -129,7 +130,7 @@ class RemindRepository(private val context: Context) {
     suspend fun signOut() {
         val uid = auth.currentUser?.uid
         val token = preferences.getString("push_token", null)
-        if (uid != null && token != null) call("unregisterDevice", mapOf("token" to token))
+        if (uid != null && token != null) runCatching { call("unregisterDevice", mapOf("token" to token)) }
         stopObserving()
         context.getSystemService(NotificationManager::class.java).cancelAll()
         if (uid != null) {

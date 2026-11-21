@@ -1,3 +1,5 @@
+> **Android-only release:** Use [FRIENDS_RELEASE_SETUP.md](FRIENDS_RELEASE_SETUP.md) for current App Check, signing, links, and deployment instructions. The web/PWA and App Check setup below is historical; keep existing project/IAM configuration unless the new checklist says otherwise.
+
 # Remind: Firebase, Google Cloud, and GitHub setup
 
 This guide deploys the TypeScript PWA, Firestore rules, and Cloud Functions from GitHub to Firebase project `reminder-app-a2150`. Any verified Google account can sign in; each account has a private reminder list and conversation history. One successful deployment is enough to start using the app.

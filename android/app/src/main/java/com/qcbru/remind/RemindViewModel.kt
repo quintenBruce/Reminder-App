@@ -27,6 +27,12 @@ import java.util.TimeZone
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 
+enum class ComposerProgress(val label: String) {
+    THINKING("Thinking…"),
+    TRANSCRIBING("Transcribing…"),
+    SAVING("Saving…"),
+}
+
 data class RemindUiState(
     val profileStatus: String = "Checking your account…",
     val profileChecking: Boolean = true,
@@ -50,6 +56,7 @@ data class RemindUiState(
     val proposal: Proposal? = null,
     val conversationId: String = "",
     val busy: Boolean = false,
+    val composerProgress: ComposerProgress? = null,
     val notice: String = "",
     val speak: String? = null,
     val theme: String = "system",
@@ -283,7 +290,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         }
         val conversationId = mutable.value.conversationId
         val pendingId = mutable.value.proposal?.id
-        mutable.update { it.copy(busy = true, notice = "") }
+        mutable.update { it.copy(busy = true, composerProgress = ComposerProgress.THINKING, notice = "") }
         viewModelScope.launch {
             try {
                 val result = repo.propose(text.trim(), conversationId, TimeZone.getDefault().id, pendingId)
@@ -298,20 +305,21 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
                     speak = if (spoken && it.spokenReplies) reply else null) }
                 if (reply.isNotBlank()) completionHaptics.tryEmit(Unit)
             } catch (error: Exception) { notice(error.message ?: "Request failed") }
-            finally { mutable.update { it.copy(busy = false) } }
+            finally { mutable.update { it.copy(busy = false, composerProgress = null) } }
         }
     }
 
     fun transcribe(audioBase64: String) {
-        mutable.update { it.copy(busy = true, notice = "Transcribing…") }
+        if (mutable.value.uid == null || mutable.value.busy) return
+        mutable.update { it.copy(busy = true, composerProgress = ComposerProgress.TRANSCRIBING, notice = "") }
         viewModelScope.launch {
             try {
                 val transcript = repo.call("transcribeAudio", mapOf("audioBase64" to audioBase64,
                     "mimeType" to "audio/mp4"))["transcript"] as? String ?: error("No transcript")
-                mutable.update { it.copy(busy = false) }
+                mutable.update { it.copy(busy = false, composerProgress = null) }
                 send(transcript, true)
             } catch (error: Exception) { notice(error.message ?: "Transcription failed")
-                mutable.update { it.copy(busy = false) } }
+                mutable.update { it.copy(busy = false, composerProgress = null) } }
         }
     }
 
@@ -325,8 +333,9 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun confirm() {
+        if (mutable.value.busy) return
         val proposal = mutable.value.proposal ?: return
-        mutable.update { it.copy(busy = true, notice = "") }
+        mutable.update { it.copy(busy = true, composerProgress = ComposerProgress.SAVING, notice = "") }
         viewModelScope.launch {
             try {
                 repo.confirm(proposal)
@@ -335,7 +344,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
                 notice(if (proposal.action == "delete") "Reminder deleted" else "Reminder saved")
                 completionHaptics.tryEmit(Unit)
             } catch (error: Exception) { notice(error.message ?: "Could not save") }
-            finally { mutable.update { it.copy(busy = false) } }
+            finally { mutable.update { it.copy(busy = false, composerProgress = null) } }
         }
     }
 

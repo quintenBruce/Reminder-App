@@ -103,6 +103,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -336,6 +337,12 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val focusManager = LocalFocusManager.current
     var draft by rememberSaveable { mutableStateOf("") }
+    var draftFocused by remember { mutableStateOf(false) }
+    var keyboardWasVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(imeVisible) {
+        if (keyboardWasVisible && !imeVisible && draftFocused) focusManager.clearFocus()
+        keyboardWasVisible = imeVisible
+    }
     val sendDraft = {
         if (draft.isNotBlank() && !state.busy) {
             onHaptic()
@@ -431,20 +438,21 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
                             }
                         }
                     } }
-                    if (state.busy) item {
+                    state.composerProgress?.let { progress -> item {
                         Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text("Checking the schedule…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(progress.label, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                    }
+                    } }
                 }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = draft, onValueChange = { draft = it },
-                            modifier = Modifier.weight(1f), label = { Text("Reminder") },
+                            modifier = Modifier.weight(1f).onFocusChanged { draftFocused = it.isFocused },
+                            label = { Text("Reminder") },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                             keyboardActions = KeyboardActions(onSend = { sendDraft() }))
@@ -452,11 +460,11 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                         }
                     }
-                    FilledTonalButton(enabled = !state.busy, onClick = { keyboard?.hide(); focusManager.clearFocus(); onHaptic(); onMic() },
+                    if (!imeVisible) FilledTonalButton(enabled = !state.busy, onClick = { focusManager.clearFocus(); onHaptic(); onMic() },
                         modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.Mic, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Speak reminder")
+                        Text(if (state.turns.isEmpty()) "Speak reminder" else "Speak")
                     }
                 }
             }

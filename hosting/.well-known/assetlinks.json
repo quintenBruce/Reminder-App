@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.qcbru.remind",
+      "sha256_cert_fingerprints": [
+        "53:17:7A:FA:28:EE:6E:91:10:94:64:06:82:50:DB:32:2E:6D:A3:E8:93:91:8A:CB:27:C9:48:13:F4:14:D8:35"
+      ]
+    }
+  }
+]

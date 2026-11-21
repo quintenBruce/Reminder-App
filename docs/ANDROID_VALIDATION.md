@@ -7,7 +7,7 @@
 - Android JVM tests: 21 passed, including shared identity and personal priority persistence.
 - Debug application APK and device-test APK: built successfully. Device tests were compiled, not run on a phone/emulator.
 - Firestore transaction tests use a serialized in-memory harness; production contention and deployed rules were not emulator-tested in this session. Rules remain owner-read/server-write with no new client access to top-level collections.
-- Live Firebase settings, release signing, verified App Links, and two-phone delivery/permission checks remain release gates. Follow [FRIENDS_RELEASE_SETUP.md](FRIENDS_RELEASE_SETUP.md).
+- Live Firebase settings, App Links using the existing debug certificate, and two-phone delivery/permission checks remain before distribution. Follow [FRIENDS_RELEASE_SETUP.md](FRIENDS_RELEASE_SETUP.md).
 
 Earlier validation entries below describe historical versions.
 

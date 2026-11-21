@@ -9,8 +9,18 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+
+@Composable
+fun AccountCheckScreen(state: RemindUiState, modifier: Modifier = Modifier) {
+    Column(modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically)) {
+        if (state.profileChecking) CircularProgressIndicator()
+        Text(state.profileStatus)
+    }
+}
 
 @Composable
 fun ProfileScreen(state: RemindUiState, model: RemindViewModel, modifier: Modifier = Modifier) {
@@ -19,15 +29,10 @@ fun ProfileScreen(state: RemindUiState, model: RemindViewModel, modifier: Modifi
     Column(modifier.padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Make yourself known", style = MaterialTheme.typography.headlineMedium)
         Text("Friends see your name and username. Your email stays private.")
-        if (!state.profileLoaded) {
-            Text(state.profileStatus)
-            if (state.profileChecking) CircularProgressIndicator()
-        } else {
-            OutlinedTextField(name, { name = it.take(60) }, label = { Text("Name") }, singleLine = true)
-            OutlinedTextField(username, { username = it.take(24) }, label = { Text("Username") }, singleLine = true,
-                supportingText = { Text("3–24 letters, numbers, or underscores") })
-            Button(onClick = { model.saveProfile(name, username) }, enabled = !state.busy && name.isNotBlank() && username.matches(Regex("[A-Za-z0-9_]{3,24}"))) { Text("Continue") }
-        }
+        OutlinedTextField(name, { name = it.take(60) }, label = { Text("Name") }, singleLine = true)
+        OutlinedTextField(username, { username = it.take(24) }, label = { Text("Username") }, singleLine = true,
+            supportingText = { Text("3–24 letters, numbers, or underscores") })
+        Button(onClick = { model.saveProfile(name, username) }, enabled = !state.busy && name.isNotBlank() && username.matches(Regex("[A-Za-z0-9_]{3,24}"))) { Text("Continue") }
     }
 }
 

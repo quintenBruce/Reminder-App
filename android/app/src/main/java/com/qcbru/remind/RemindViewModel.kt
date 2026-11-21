@@ -36,6 +36,7 @@ enum class ComposerProgress(val label: String) {
 data class RemindUiState(
     val profileStatus: String = "Checking your account…",
     val profileChecking: Boolean = true,
+    val signingOut: Boolean = false,
     val friendsRefreshing: Boolean = false,
     val profileLoaded: Boolean = false,
     val profileReady: Boolean = false,
@@ -497,8 +498,21 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
             .onFailure { notice(it.message ?: "Could not enable notifications") } }
     }
 
-    fun signOut() { viewModelScope.launch { runCatching { repo.signOut() }
-        .onFailure { notice(it.message ?: "Could not sign out") } } }
+    fun signOut() {
+        if (mutable.value.signingOut) return
+        mutable.update { it.copy(signingOut = true) }
+        viewModelScope.launch {
+            try {
+                repo.signOut()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                notice(error.message ?: "Could not sign out")
+            } finally {
+                mutable.update { it.copy(signingOut = false) }
+            }
+        }
+    }
 
     override fun onCleared() { repo.stopObserving(); repo.auth.removeAuthStateListener(authListener) }
 }

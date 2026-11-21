@@ -382,6 +382,7 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
             }
         } } ) { padding ->
         if (state.uid == null) WelcomeScreen(Modifier.fillMaxSize().padding(padding), onSignIn)
+        else if (!state.profileLoaded) AccountCheckScreen(state, Modifier.fillMaxSize().padding(padding))
         else if (!state.profileReady) ProfileScreen(state, model, Modifier.fillMaxSize().padding(padding))
         else when (state.tab) {
             "Ask" -> Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
@@ -756,7 +757,13 @@ private fun SettingsScreen(state: RemindUiState, modifier: Modifier, onTheme: (S
                 Text("Account", style = MaterialTheme.typography.titleMedium)
                 Text(state.email, style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                TextButton(onClick = onSignOut) { Text("Sign out") }
+                TextButton(onClick = onSignOut, enabled = !state.signingOut) {
+                    if (state.signingOut) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(if (state.signingOut) "Signing out…" else "Sign out")
+                }
             }
         }
     }

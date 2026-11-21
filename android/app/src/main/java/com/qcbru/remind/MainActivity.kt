@@ -563,10 +563,35 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
             Text("A regular reminder may arrive sooner.", style = MaterialTheme.typography.bodySmall)
         } },
         confirmButton = { TextButton(onClick = model::closeSnoozeChooser) { Text("Cancel") } })
-    state.inviter?.let { name -> AlertDialog(onDismissRequest = model::closeInvite,
-        title = { Text("Add $name?") }, text = { Text("You will both become friends and can share reminders.") },
-        confirmButton = { TextButton(onClick = model::acceptInvite, enabled = !state.busy) { Text("Add Friend") } },
-        dismissButton = { TextButton(onClick = model::closeInvite) { Text("Cancel") } }) }
+    val showInviteLoading = state.inviteLoading && state.uid != null &&
+        (state.profileReady || (!state.profileLoaded && state.profileChecking))
+    if (showInviteLoading || state.inviter != null || state.inviteError != null) {
+        val loading = showInviteLoading
+        AlertDialog(
+            onDismissRequest = { if (!loading) model.closeInvite() },
+            properties = androidx.compose.ui.window.DialogProperties(
+                dismissOnBackPress = !loading, dismissOnClickOutside = !loading),
+            title = { Text(state.inviter?.let { "Add $it?" } ?: "Friend invitation") },
+            text = {
+                if (loading) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Loading invitation…")
+                    }
+                } else Text(state.inviteError ?: "You will both become friends and can share reminders.")
+            },
+            confirmButton = {
+                if (!loading && state.inviter != null) {
+                    TextButton(onClick = model::acceptInvite, enabled = !state.busy) { Text("Add Friend") }
+                }
+            },
+            dismissButton = {
+                if (!loading) TextButton(onClick = model::closeInvite) {
+                    Text(if (state.inviteError != null) "Close" else "Cancel")
+                }
+            },
+        )
+    }
     leaving?.let { reminder -> AlertDialog(onDismissRequest = { leaving = null }, title = { Text("Leave this reminder?") },
         text = { Text("Your alerts stop. Other participants keep the shared reminder.") },
         confirmButton = { TextButton(onClick = { model.leave(reminder); leaving = null }) { Text("Leave") } },

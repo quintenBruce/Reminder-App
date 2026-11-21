@@ -45,6 +45,8 @@ data class RemindUiState(
     val friends: List<Map<String, String>> = emptyList(),
     val preparingFriendLink: Boolean = false,
     val inviter: String? = null,
+    val inviteLoading: Boolean = false,
+    val inviteError: String? = null,
     val recipientChoices: List<Pair<String, String>> = emptyList(),
     val matchName: String = "",
     val originalText: String = "",
@@ -92,8 +94,9 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         if (verified) openAccount(user.uid, user.email ?: "")
         else {
             profileJob?.cancel()
+            invitePreviewJob?.cancel()
             repo.stopObserving()
-            mutable.update { it.copy(uid = null, email = "", reminders = emptyList(), proposal = null, profileLoaded = false, profileReady = false, friendsRefreshing = false, friends = emptyList(), preparingFriendLink = false, inviter = null) }
+            mutable.update { it.copy(uid = null, email = "", reminders = emptyList(), proposal = null, profileLoaded = false, profileReady = false, friendsRefreshing = false, friends = emptyList(), preparingFriendLink = false, inviter = null, inviteError = null) }
         }
     }
 
@@ -132,6 +135,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private var inviteToken: String? = null
+    private var invitePreviewJob: Job? = null
     private fun accountTask(block: suspend () -> Unit) {
         if (mutable.value.busy) return
         mutable.update { it.copy(busy = true) }
@@ -217,24 +221,48 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun receiveInvite(token: String) {
         if (!token.matches(Regex("[A-Za-z0-9_-]{1,128}"))) return
+        invitePreviewJob?.cancel()
+        invitePreviewJob = null
         inviteToken = token
         prefs.edit().putString("pending_invite", token).apply()
+        mutable.update { it.copy(inviteLoading = true, inviter = null, inviteError = null) }
         previewInvite()
     }
-    fun previewInvite() {
-        if (!mutable.value.profileReady) return
+    private fun previewInvite() {
+        val uid = mutable.value.uid ?: return
+        if (!mutable.value.profileReady || invitePreviewJob?.isActive == true) return
         val token = inviteToken ?: prefs.getString("pending_invite", null) ?: return
+        if (mutable.value.inviter != null || mutable.value.inviteError != null) return
         inviteToken = token
-        viewModelScope.launch {
-            runCatching { repo.call("friendInvite", mapOf("token" to token)) }.onSuccess { result ->
-                val profile = result["profile"] as? Map<*, *>
-                mutable.update { it.copy(inviter = "${profile?.get("displayName")} (@${profile?.get("username")})") }
-            }.onFailure { notice(it.message ?: "Invitation unavailable"); closeInvite() }
+        mutable.update { it.copy(inviteLoading = true) }
+        invitePreviewJob = viewModelScope.launch {
+            try {
+                val result = repo.call("friendInvite", mapOf("token" to token))
+                val profile = result["profile"] as? Map<*, *> ?: error("Invitation unavailable.")
+                val name = profile["displayName"] as? String ?: error("Invitation unavailable.")
+                val username = profile["username"] as? String ?: error("Invitation unavailable.")
+                if (inviteToken == token && mutable.value.uid == uid) {
+                    mutable.update { it.copy(inviteLoading = false, inviter = "$name (@$username)") }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (inviteToken == token && mutable.value.uid == uid) {
+                    mutable.update { it.copy(inviteLoading = false, inviteError = error.message ?: "Invitation unavailable.") }
+                }
+            }
         }
     }
-    fun closeInvite() { inviteToken = null; prefs.edit().remove("pending_invite").apply(); mutable.update { it.copy(inviter = null) } }
+    fun closeInvite() {
+        inviteToken = null
+        prefs.edit().remove("pending_invite").apply()
+        mutable.update { it.copy(inviter = null, inviteLoading = false, inviteError = null) }
+    }
     fun acceptInvite() = accountTask {
-        repo.call("friendInvite", mapOf("token" to inviteToken, "accept" to true)); closeInvite()
+        val token = inviteToken ?: return@accountTask
+        if (mutable.value.inviteLoading || mutable.value.inviter == null) return@accountTask
+        repo.call("friendInvite", mapOf("token" to token, "accept" to true))
+        if (inviteToken == token && !mutable.value.inviteLoading) closeInvite()
         mutable.update { it.copy(tab = "Friends") }; notice("You are now friends")
     }
     fun setProposalPriority(priority: Boolean) { mutable.update { it.copy(proposal = it.proposal?.copy(priority = priority)) } }

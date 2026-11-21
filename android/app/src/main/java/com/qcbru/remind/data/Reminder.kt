@@ -80,6 +80,11 @@ data class ProposalReview(
     val endsAt: Long?,
     val recipients: List<String>,
     val actionDetail: String?,
+    val whenAt: Long? = null,
+    val startsAt: Long? = null,
+    val repeatTime: String? = null,
+    val scheduleZone: String? = null,
+    val followUpMinutes: Int? = null,
 ) {
     companion object {
         internal fun fromMap(map: Map<*, *>) = ProposalReview(
@@ -89,6 +94,11 @@ data class ProposalReview(
             endsAt = (map["endsAt"] as? Number)?.toLong(),
             recipients = (map["recipients"] as? List<*>)?.filterIsInstance<String>().orEmpty(),
             actionDetail = map["actionDetail"] as? String,
+            whenAt = (map["whenAt"] as? Number)?.toLong(),
+            startsAt = (map["startsAt"] as? Number)?.toLong(),
+            repeatTime = map["repeatTime"] as? String,
+            scheduleZone = map["scheduleZone"] as? String,
+            followUpMinutes = (map["followUpMinutes"] as? Number)?.toInt(),
         )
     }
 }
@@ -105,8 +115,7 @@ data class Proposal(
 ) {
     companion object {
         fun fromMap(map: Map<*, *>): Proposal = Proposal(
-            review = (map["review"] as? Map<*, *>)?.let { ProposalReview.fromMap(it) }
-                ?: legacyScheduleReview(map),
+            review = readReview(map),
             priority = map["priority"] as? Boolean ?: false,
             id = map["id"] as String,
             action = map["action"] as String,
@@ -116,11 +125,12 @@ data class Proposal(
             baseVersion = (map["baseVersion"] as? Number)?.toLong(),
         )
 
-        private fun legacyScheduleReview(map: Map<*, *>): ProposalReview? {
-            if (map["action"] !in listOf("create", "edit")) return null
-            val title = map["title"] as? String ?: return null
+        private fun readReview(map: Map<*, *>): ProposalReview? {
+            val review = (map["review"] as? Map<*, *>)?.let { ProposalReview.fromMap(it) }
+            if (map["action"] !in listOf("create", "edit")) return review
             val rule = map["rule"] as? Map<*, *>
-            val recurrence = when (rule?.get("kind")) {
+            val kind = rule?.get("kind")
+            val recurrence = when (kind) {
                 "interval" -> (rule["everyMinutes"] as? Number)?.let { "Every ${it.toInt()} minutes" }
                 "daily" -> "Daily"
                 "weekly" -> "Weekly"
@@ -128,12 +138,32 @@ data class Proposal(
                 "yearly" -> "Yearly"
                 else -> null
             }
-            val endAt = (rule?.get("endAt") as? String)?.let {
-                runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
-            }
             val recipients = (map["readback"] as? String)?.substringAfter(". Confirm? Shared with ", "")
                 ?.substringBefore(". Everyone can edit;")?.takeIf { it.isNotBlank() }
-            return ProposalReview(title, map["notes"] as? String, recurrence, endAt, listOfNotNull(recipients), null)
+            val base = review ?: ProposalReview(map["title"] as? String ?: return null,
+                map["notes"] as? String, recurrence, parseDate(rule?.get("endAt")), listOfNotNull(recipients), null)
+            val firstPreview = ((map["preview"] as? List<*>)?.firstOrNull() as? Number)?.toLong()
+            val start = parseDate(rule?.get("startAt"))
+            val zone = rule?.get("timeZone") as? String
+            val hour = (rule?.get("hour") as? Number)?.toInt()
+            val minute = (rule?.get("minute") as? Number)?.toInt()
+            val centralRepeatTime = if (zone == "America/Chicago" && hour != null && minute != null) {
+                val displayHour = (hour % 12).takeUnless { it == 0 } ?: 12
+                "$displayHour:${minute.toString().padStart(2, '0')} ${if (hour < 12) "AM" else "PM"} Central"
+            } else null
+            return base.copy(
+                whenAt = base.whenAt ?: if (kind == "once" || base.recurrence == "Once") parseDate(rule?.get("at")) ?: firstPreview else null,
+                startsAt = base.startsAt ?: start?.let {
+                    runCatching { Schedule.next(JSONObject(rule.orEmpty()), it - 1) }.getOrNull()
+                },
+                repeatTime = base.repeatTime ?: centralRepeatTime,
+                scheduleZone = base.scheduleZone ?: zone?.takeUnless { it == "America/Chicago" },
+                followUpMinutes = base.followUpMinutes ?: (map["repeatUntilDoneMinutes"] as? Number)?.toInt(),
+            )
+        }
+
+        private fun parseDate(value: Any?): Long? = (value as? String)?.let {
+            runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull()
         }
     }
 }

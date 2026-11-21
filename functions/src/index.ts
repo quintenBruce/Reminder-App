@@ -248,6 +248,7 @@ export const proposeAction = onCall({ region, secrets: [openAiKey], maxInstances
     : friends.filter(f => participantIds.includes(f.uid)).map(f => `${f.displayName} (@${f.username})`);
   const { review, readback } = buildProposalReview({
     action: d.action, title, notes, rule, recipients, preview, snoozeMinutes: d.snoozeMinutes,
+    repeatUntilDoneMinutes: nudgeMinutes,
   });
   const proposal: Proposal = {
     participantIds, ...(candidate?.sharedId ? { sharedId: candidate.sharedId, sharedVersion: candidate.sharedVersion } : {}),

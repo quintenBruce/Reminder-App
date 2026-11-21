@@ -450,16 +450,29 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
                                             style = MaterialTheme.typography.bodyLarge)
                                     } else {
                                         review.title?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
-                                        review.notes?.takeIf { it.isNotBlank() }?.let { Text("Notes · $it") }
                                         review.actionDetail?.let { Text(it) }
-                                        review.recurrence?.takeUnless { it == "Once" }?.let { Text("Repeats · $it") }
+                                        review.whenAt?.let { Text("When · ${dateLabel(it)}") }
+                                        review.recurrence?.takeUnless { it == "Once" }?.let { cadence ->
+                                            val repeatTime = review.repeatTime?.let { " at $it" }.orEmpty()
+                                            Text("Repeats · $cadence$repeatTime")
+                                        }
+                                        review.scheduleZone?.let { Text("Schedule follows $it. Alert times shown in Central.") }
+                                        review.startsAt?.let { Text("Starts · ${dateLabel(it)}") }
                                         review.endsAt?.let { Text("Ends · ${dateLabel(it)}") }
-                                        if (review.recipients.isNotEmpty()) Text("Shared with · ${review.recipients.joinToString()}")
+                                        review.notes?.takeIf { it.isNotBlank() }?.let { Text("Notes · $it") }
+                                        if (review.recipients.isNotEmpty()) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text("Shared with · ${review.recipients.joinToString()}")
+                                                Text("Participants can edit. Done and Snooze apply individually.",
+                                                    style = MaterialTheme.typography.bodySmall)
+                                            }
+                                        }
+                                        review.followUpMinutes?.let { Text("Follow-up · Every $it minutes until Done") }
                                     }
                                     if (proposal.action == "create" || proposal.action == "edit") {
-                                        if (proposal.preview.isNotEmpty()) {
+                                        if (review?.whenAt == null && proposal.preview.isNotEmpty()) {
                                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text("UPCOMING TIMES", style = MaterialTheme.typography.labelMedium)
+                                                Text("NEXT ALERTS", style = MaterialTheme.typography.labelMedium)
                                                 proposal.preview.take(3).forEach { Text("•  ${dateLabel(it)}",
                                                     style = MaterialTheme.typography.bodyMedium) }
                                             }

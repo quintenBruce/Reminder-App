@@ -16,6 +16,15 @@ class ScheduleTest {
     private fun dates(json: String, after: String, count: Int = 3) =
         Schedule.preview(rule(json), ms(after), count).map { Instant.ofEpochMilli(it).toString() }
 
+    @Test fun monthlyRangeIncludesEndpointsAndFiltersWeekdays() {
+        val range = """{"kind":"monthly_range","startAt":"2026-11-01T00:00:00Z","timeZone":"UTC",
+            "hour":9,"minute":0,"startDayOfMonth":10,"endDayOfMonth":22"""
+        assertEquals(listOf("2026-11-22T09:00:00Z", "2026-12-10T09:00:00Z"),
+            dates("$range}", "2026-11-21T09:00:00Z", 2))
+        assertEquals(listOf("2026-11-20T09:00:00Z", "2026-12-10T09:00:00Z"),
+            dates("""$range,"daysOfWeek":[1,2,3,4,5]}""", "2026-11-19T09:00:00Z", 2))
+    }
+
     @Test fun onceAndInterval() {
         assertEquals(ms("2026-10-11T19:00:00Z"), Schedule.next(rule("""{"kind":"once","at":"2026-10-11T14:00:00-05:00"}"""), ms("2026-10-11T18:59:00Z")))
         assertNull(Schedule.next(rule("""{"kind":"once","at":"2026-10-11T14:00:00-05:00"}"""), ms("2026-10-11T19:00:00Z")))

@@ -134,7 +134,7 @@ data class Proposal(
                 "interval" -> (rule["everyMinutes"] as? Number)?.let { "Every ${it.toInt()} minutes" }
                 "daily" -> "Daily"
                 "weekly" -> "Weekly"
-                "monthly", "monthly_weekday", "monthly_weekly" -> "Monthly"
+                "monthly", "monthly_weekday", "monthly_weekly", "monthly_range" -> "Monthly"
                 "yearly" -> "Yearly"
                 else -> null
             }

@@ -18,6 +18,10 @@ function cadence(rule: ScheduleRule): string {
     }
     case 'monthly_weekly':
       return `Every ${rule.daysOfWeek!.map(day => weekdays[day - 1]).join(', ')} from day ${rule.startDayOfMonth} each month`;
+    case 'monthly_range': {
+      const days = rule.daysOfWeek?.length ? rule.daysOfWeek.map(day => weekdays[day - 1]).join(', ') : 'day';
+      return `Every ${days} from day ${rule.startDayOfMonth} through day ${rule.endDayOfMonth} each month`;
+    }
     case 'yearly': return `Yearly on ${months[rule.month! - 1]} ${rule.dayOfMonth}`;
   }
 }

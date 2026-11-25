@@ -24,8 +24,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import com.google.firebase.functions.FirebaseFunctionsException
 import java.util.TimeZone
-import java.time.ZonedDateTime
-import java.time.temporal.ChronoUnit
 
 enum class ComposerProgress(val label: String) {
     THINKING("Thinking…"),
@@ -61,6 +59,7 @@ data class RemindUiState(
     val conversationOpener: String = "",
     val busy: Boolean = false,
     val composerProgress: ComposerProgress? = null,
+    val pendingMessage: String? = null,
     val notice: String = "",
     val speak: String? = null,
     val theme: String = "system",
@@ -115,6 +114,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         prefs.edit().putString("conversation:$uid", fresh).apply()
         val opener = openers.next()
         mutable.update { it.copy(uid = uid, email = email, conversationId = fresh, conversationOpener = opener, turns = emptyList(),
+            pendingMessage = null, composerProgress = null, busy = false,
             profileReady = prefs.contains("profile_username:$uid"), profileLoaded = prefs.contains("profile_username:$uid"),
             displayName = prefs.getString("profile_name:$uid", "") ?: "", username = prefs.getString("profile_username:$uid", "") ?: "",
             proposal = null, reminders = store.reminders(uid), notice = prefs.getString("sync_notice", "") ?: "") }
@@ -321,44 +321,55 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
     fun clearSpeak() { mutable.update { it.copy(speak = null) } }
 
     fun send(text: String, spoken: Boolean = false) {
-        val uid = mutable.value.uid ?: return
-        if (text.isBlank() || mutable.value.busy) return
-        if (mutable.value.proposal != null && text.trim().matches(Regex("(?i)yes|confirm|do it|okay|ok"))) {
-            confirm(); return
+        val current = mutable.value
+        val uid = current.uid ?: return
+        val message = text.trim()
+        if (message.isEmpty() || (current.busy && !(spoken && current.composerProgress == ComposerProgress.TRANSCRIBING))) return
+        if (current.proposal != null && message.matches(Regex("(?i)yes|confirm|do it|okay|ok"))) {
+            confirm(message); return
         }
-        val conversationId = mutable.value.conversationId
-        val pendingId = mutable.value.proposal?.id
-        mutable.update { it.copy(busy = true, composerProgress = ComposerProgress.THINKING, notice = "") }
+        val conversationId = current.conversationId
+        val pendingId = current.proposal?.id
+        fun sameConversation() = mutable.value.uid == uid && mutable.value.conversationId == conversationId
+        mutable.update { it.copy(busy = true, composerProgress = ComposerProgress.THINKING, pendingMessage = message, notice = "") }
         viewModelScope.launch {
             try {
-                val result = repo.propose(text.trim(), conversationId, TimeZone.getDefault().id, pendingId)
-                if (mutable.value.uid != uid) return@launch
+                val result = repo.propose(message, conversationId, TimeZone.getDefault().id, pendingId)
+                if (!sameConversation()) return@launch
                 val reply = result["reply"] as? String ?: ""
                 val proposal = (result["proposal"] as? Map<*, *>)?.let { Proposal.fromMap(it) }
                 val choices = (result["recipientChoices"] as? List<*>)?.mapNotNull { item ->
                     (item as? Map<*, *>)?.let { (it["displayName"] as? String ?: "") to (it["username"] as? String ?: "") }
                 } ?: emptyList()
-                mutable.update { it.copy(turns = it.turns + (text.trim() to if (proposal == null) reply else ""), proposal = proposal,
-                    composerProgress = null,
+                mutable.update { it.copy(turns = it.turns + (message to if (proposal == null) reply else ""), proposal = proposal,
+                    composerProgress = null, pendingMessage = null,
                     recipientChoices = choices, matchName = result["matchName"] as? String ?: "", originalText = result["originalText"] as? String ?: "",
                     speak = if (spoken && it.spokenReplies) reply else null) }
                 if (reply.isNotBlank()) completionHaptics.tryEmit(Unit)
-            } catch (error: Exception) { notice(error.message ?: "Request failed") }
-            finally { mutable.update { it.copy(busy = false, composerProgress = null) } }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { if (sameConversation()) notice(error.message ?: "Request failed") }
+            finally { if (sameConversation()) mutable.update { it.copy(busy = false, composerProgress = null, pendingMessage = null) } }
         }
     }
 
     fun transcribe(audioBase64: String) {
-        if (mutable.value.uid == null || mutable.value.busy) return
+        val current = mutable.value
+        if (current.uid == null || current.busy) return
+        fun sameConversation() = mutable.value.uid == current.uid && mutable.value.conversationId == current.conversationId
         mutable.update { it.copy(busy = true, composerProgress = ComposerProgress.TRANSCRIBING, notice = "") }
         viewModelScope.launch {
             try {
                 val transcript = repo.call("transcribeAudio", mapOf("audioBase64" to audioBase64,
                     "mimeType" to "audio/mp4"))["transcript"] as? String ?: error("No transcript")
-                mutable.update { it.copy(busy = false, composerProgress = null) }
-                send(transcript, true)
-            } catch (error: Exception) { notice(error.message ?: "Transcription failed")
-                mutable.update { it.copy(busy = false, composerProgress = null) } }
+                if (transcript.isBlank()) error("No transcript")
+                if (sameConversation()) send(transcript, true)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                if (sameConversation()) {
+                    notice(error.message ?: "Transcription failed")
+                    mutable.update { it.copy(busy = false, composerProgress = null) }
+                }
+            }
         }
     }
 
@@ -371,10 +382,12 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         send(if (corrected == current.originalText) "${current.originalText}. I meant @$username." else corrected)
     }
 
-    fun confirm() {
-        if (mutable.value.busy) return
+    fun confirm() = confirm(null)
+
+    private fun confirm(message: String?) {
+        if (mutable.value.busy && !(message != null && mutable.value.composerProgress == ComposerProgress.TRANSCRIBING)) return
         val proposal = mutable.value.proposal ?: return
-        mutable.update { it.copy(busy = true, composerProgress = ComposerProgress.SAVING, notice = "") }
+        mutable.update { it.copy(busy = true, composerProgress = ComposerProgress.SAVING, pendingMessage = message, notice = "") }
         viewModelScope.launch {
             try {
                 repo.confirm(proposal)
@@ -383,7 +396,7 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
                 notice(if (proposal.action == "delete") "Reminder deleted" else "Reminder saved")
                 completionHaptics.tryEmit(Unit)
             } catch (error: Exception) { notice(error.message ?: "Could not save") }
-            finally { mutable.update { it.copy(busy = false, composerProgress = null) } }
+            finally { mutable.update { it.copy(busy = false, composerProgress = null, pendingMessage = null) } }
         }
     }
 
@@ -457,7 +470,8 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
 
     fun closeSnoozeChooser() { mutable.update { it.copy(snoozeReminderId = null, snoozeOccurrenceId = null) } }
 
-    fun snooze(minutes: Int, exactAt: Long? = null) {
+    fun snooze(minutes: Int? = null, exactAt: Long? = null) {
+        if (exactAt != null && exactAt <= System.currentTimeMillis()) return
         val uid = mutable.value.uid ?: return
         val id = mutable.value.snoozeReminderId ?: return
         val occurrence = mutable.value.snoozeOccurrenceId ?: return
@@ -473,13 +487,6 @@ class RemindViewModel(application: Application) : AndroidViewModel(application) 
         refreshLocal()
         notice("Reminding you later")
         completionHaptics.tryEmit(Unit)
-    }
-
-    fun eveningSnoozeAt(): Long {
-        val now = ZonedDateTime.now()
-        var evening = now.truncatedTo(ChronoUnit.DAYS).plusHours(18)
-        if (!evening.isAfter(now)) evening = evening.plusDays(1)
-        return evening.toInstant().toEpochMilli()
     }
 
     fun delete(reminder: Reminder) {

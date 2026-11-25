@@ -103,6 +103,7 @@ import kotlinx.coroutines.flow.collect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -127,13 +128,14 @@ import com.qcbru.remind.data.Reminder
 import com.qcbru.remind.data.Schedule
 import com.qcbru.remind.data.PushSync
 import com.qcbru.remind.data.RemindRepository
-import com.qcbru.remind.data.clockLabel
+import com.qcbru.remind.data.calendarSnoozeOptions
 import com.qcbru.remind.data.dateLabel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.flow.first
+import java.time.ZonedDateTime
 
 class MainActivity : ComponentActivity() {
     private val model: RemindViewModel by viewModels()
@@ -391,6 +393,18 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
         else if (!state.profileReady) ProfileScreen(state, model, Modifier.fillMaxSize().padding(padding))
         else when (state.tab) {
             "Ask" -> Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
+                val hasPendingMessage = state.pendingMessage != null ||
+                    state.composerProgress == ComposerProgress.TRANSCRIBING
+                LaunchedEffect(hasPendingMessage) {
+                    if (hasPendingMessage) {
+                        val pendingIndex = 1 + state.turns.size +
+                            (if (state.conversationOpener.isNotBlank()) 1 else 0) +
+                            (if (state.recipientChoices.isNotEmpty()) 1 else 0) +
+                            (if (state.proposal != null) 1 else 0)
+                        snapshotFlow { conversationList.layoutInfo.totalItemsCount }.first { it > pendingIndex }
+                        conversationList.animateScrollToItem(pendingIndex)
+                    }
+                }
                 LaunchedEffect(state.conversationId, state.turns.size) {
                     val response = "${state.conversationId}:${state.turns.size}"
                     if (state.turns.isNotEmpty() && response != lastScrolledResponse) {
@@ -494,7 +508,10 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
                                 }
                             }
                         } }
-                        state.composerProgress?.let { progress -> item {
+                        if (hasPendingMessage) item(key = "pending-message") {
+                            PendingConversationMessage(state.pendingMessage)
+                        }
+                        state.composerProgress?.takeUnless { it == ComposerProgress.TRANSCRIBING }?.let { progress -> item {
                             Row(verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -601,14 +618,18 @@ private fun RemindScreen(state: RemindUiState, model: RemindViewModel,
         onDismissRequest = model::closeSnoozeChooser,
         title = { Text("Remind me later") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            val evening = remember { model.eveningSnoozeAt() }
-            listOf("In 10 minutes" to 10, "In 1 hour" to 60,
-                "Evening (${clockLabel(evening)})" to 0).forEach { (label, minutes) ->
-                OutlinedButton(onClick = {
-                    if (minutes == 0) model.snooze(10, evening)
-                    else model.snooze(minutes)
-                }, modifier = Modifier.fillMaxWidth()) {
-                    Text(label)
+            val options by produceState(calendarSnoozeOptions(ZonedDateTime.now())) {
+                while (true) {
+                    value = calendarSnoozeOptions(ZonedDateTime.now())
+                    delay(60_000L - System.currentTimeMillis() % 60_000L)
+                }
+            }
+            OutlinedButton(onClick = { model.snooze(minutes = 60) }, modifier = Modifier.fillMaxWidth()) {
+                Text("In 1 hour")
+            }
+            options.forEach { option ->
+                OutlinedButton(onClick = { model.snooze(exactAt = option.at) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(option.label)
                 }
             }
             Text("A regular reminder may arrive sooner.", style = MaterialTheme.typography.bodySmall)
@@ -878,6 +899,25 @@ private fun ConversationTurn(user: String, assistant: String) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         ConversationMessage(user, fromUser = true)
         if (assistant.isNotBlank()) AssistantMessage(assistant)
+    }
+}
+
+@Composable
+internal fun PendingConversationMessage(message: String?) {
+    if (message != null) {
+        ConversationMessage(message, fromUser = true)
+        return
+    }
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+        Surface(shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Text(ComposerProgress.TRANSCRIBING.label)
+            }
+        }
     }
 }
 

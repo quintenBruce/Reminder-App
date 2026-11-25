@@ -16,6 +16,15 @@ function reminder(partial: Partial<ReminderRecord> = {}): ReminderRecord {
 }
 
 describe('deterministic recurrence', () => {
+  it('includes both monthly range endpoints and rolls into the next month', () => {
+    const rule = { kind: 'monthly_range', startDayOfMonth: 10, endDayOfMonth: 22,
+      startAt: '2026-10-01T00:00:00Z', timeZone: 'UTC', hour: 9, minute: 0 } as const;
+    expect(previewOccurrences(rule, ms('2026-11-21T09:00:00Z'), 2).map(iso))
+      .toEqual(['2026-11-22T09:00:00.000Z', '2026-12-10T09:00:00.000Z']);
+    expect(previewOccurrences({ ...rule, daysOfWeek: [1, 2, 3, 4, 5] }, ms('2026-11-19T09:00:00Z'), 2).map(iso))
+      .toEqual(['2026-11-20T09:00:00.000Z', '2026-12-10T09:00:00.000Z']);
+    expect(() => nextOccurrence({ ...rule, endDayOfMonth: 9 }, 0)).toThrow('Invalid monthly day range');
+  });
   it('accepts a locally delivered due occurrence but rejects one before it is due', () => {
     const due = ms('2026-10-11T14:00:00-05:00');
     const r = reminder({ nextDueAt: due, lastSentAt: undefined, lastScheduledAt: undefined });

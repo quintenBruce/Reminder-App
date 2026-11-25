@@ -2,7 +2,7 @@ package com.qcbru.remind.data
 
 object LocalActions {
     fun apply(reminder: Reminder, occurrenceId: String, action: String, now: Long,
-        snoozeMinutes: Int = 10, snoozeAt: Long? = null): Reminder {
+        snoozeMinutes: Int? = 10, snoozeAt: Long? = null): Reminder {
         val scheduledAt = occurrenceId.substringAfterLast('_').toLongOrNull() ?: return reminder
         if (occurrenceId != "${reminder.id}_$scheduledAt") return reminder
         return when (action) {
@@ -17,7 +17,8 @@ object LocalActions {
                 val firstRegular = Schedule.next(reminder.rule, scheduledAt)
                 val regular = if (firstRegular != null && firstRegular <= now)
                     Schedule.next(reminder.rule, now) else firstRegular
-                val snoozedAt = snoozeAt?.coerceAtLeast(now + 1_000L) ?: now + snoozeMinutes * 60_000L
+                val snoozedAt = snoozeAt?.coerceAtLeast(now + 1_000L)
+                    ?: (now + (snoozeMinutes ?: return reminder) * 60_000L)
                 if (regular != null && regular <= snoozedAt)
                     reminder.copy(nextDueAt = regular, currentScheduledAt = null)
                 else reminder.copy(nextDueAt = snoozedAt, currentScheduledAt = scheduledAt)

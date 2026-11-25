@@ -1,6 +1,7 @@
 package com.qcbru.remind
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -13,6 +14,15 @@ import org.junit.Test
 
 class ReminderCardTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun pendingVoiceBubbleBecomesTranscriptBeforeReply() {
+        val message = mutableStateOf<String?>(null)
+        compose.setContent { MaterialTheme { PendingConversationMessage(message.value) } }
+        compose.onNodeWithText(ComposerProgress.TRANSCRIBING.label).assertExists()
+        compose.runOnIdle { message.value = "Water the plants tomorrow" }
+        compose.onNodeWithText("Water the plants tomorrow").assertExists()
+        compose.onNodeWithText(ComposerProgress.TRANSCRIBING.label).assertDoesNotExist()
+    }
 
     @Test fun showsActionsAndOpensHistory() {
         var lastAction = ""

@@ -61,6 +61,8 @@ object Schedule {
                     date.dayOfMonth + 7 > date.lengthOfMonth() else week == rule.getInt("weekOfMonth")
             }
             "monthly_weekly" -> selected && date.dayOfMonth >= rule.getInt("startDayOfMonth")
+            "monthly_range" -> date.dayOfMonth in rule.getInt("startDayOfMonth")..rule.getInt("endDayOfMonth") &&
+                (days == null || days.length() == 0 || selected)
             "yearly" -> date.monthValue == rule.getInt("month") &&
                 date.dayOfMonth == minOf(rule.getInt("dayOfMonth"), date.lengthOfMonth())
             else -> error("Unknown schedule kind: $kind")

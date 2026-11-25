@@ -4,7 +4,7 @@ export type ScheduleRule =
   | { kind: 'once'; at: string }
   | { kind: 'interval'; startAt: string; everyMinutes: number; endAt?: string }
   | {
-      kind: 'daily' | 'weekly' | 'monthly' | 'monthly_weekday' | 'monthly_weekly' | 'yearly';
+      kind: 'daily' | 'weekly' | 'monthly' | 'monthly_weekday' | 'monthly_weekly' | 'monthly_range' | 'yearly';
       startAt: string;
       timeZone: string;
       hour: number;
@@ -13,6 +13,7 @@ export type ScheduleRule =
       dayOfMonth?: number;
       weekOfMonth?: number;
       startDayOfMonth?: number;
+      endDayOfMonth?: number;
       month?: number;
       endAt?: string;
     };
@@ -85,6 +86,14 @@ export function validateRule(rule: ScheduleRule): void {
       (!Number.isInteger(rule.startDayOfMonth) || (rule.startDayOfMonth ?? 0) < 1 || (rule.startDayOfMonth ?? 0) > 31)) {
     throw new Error('Invalid monthly start day.');
   }
+  if (rule.kind === 'monthly_range') {
+    const { startDayOfMonth: first, endDayOfMonth: last } = rule;
+    if (first == null || last == null || !Number.isInteger(first) || !Number.isInteger(last) ||
+        first < 1 || last > 31 || first > last) throw new Error('Invalid monthly day range.');
+    if (rule.daysOfWeek?.some(day => !Number.isInteger(day) || day < 1 || day > 7)) {
+      throw new Error('Weekdays must be numbered 1 to 7.');
+    }
+  }
   if ((rule.kind === 'monthly' || rule.kind === 'yearly') &&
       (!Number.isInteger(rule.dayOfMonth) || (rule.dayOfMonth ?? 0) < 1 || (rule.dayOfMonth ?? 0) > 31)) {
     throw new Error('Invalid day of month.');
@@ -120,6 +129,9 @@ export function nextOccurrence(rule: ScheduleRule, afterMs: number): number | nu
     }
     if (rule.kind === 'monthly_weekly' &&
         (date.day < rule.startDayOfMonth! || !rule.daysOfWeek?.includes(date.dayOfWeek))) continue;
+    if (rule.kind === 'monthly_range' &&
+        (date.day < rule.startDayOfMonth! || date.day > rule.endDayOfMonth! ||
+        (rule.daysOfWeek?.length && !rule.daysOfWeek.includes(date.dayOfWeek)))) continue;
     if (rule.kind === 'monthly' && date.day !== Math.min(rule.dayOfMonth!, date.daysInMonth)) continue;
     if (rule.kind === 'yearly' && (date.month !== rule.month || date.day !== Math.min(rule.dayOfMonth!, date.daysInMonth))) continue;
     const candidate = Temporal.ZonedDateTime.from({

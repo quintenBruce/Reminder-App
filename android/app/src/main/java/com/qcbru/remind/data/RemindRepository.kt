@@ -161,7 +161,7 @@ class RemindRepository(private val context: Context) {
     }
 
     fun queueAction(uid: String, reminderId: String, occurrenceId: String, action: String,
-        local: Boolean, snoozeMinutes: Int = 10, snoozeAt: Long? = null): PendingAction {
+        local: Boolean, snoozeMinutes: Int? = 10, snoozeAt: Long? = null): PendingAction {
         val pending = PendingAction(UUID.randomUUID().toString(), uid, reminderId, occurrenceId, action,
             if (action == "snooze") snoozeMinutes else null, snoozeAt, local)
         store.queue(pending)
